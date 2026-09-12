@@ -1,0 +1,51 @@
+// TouchRate - measurement export (CSV + human report + JSON summary)
+#pragma once
+#include "common.h"
+#include "tracker.h"
+#include "device.h"
+#include "display.h"
+
+struct PresentInfo
+{
+    std::string adapter;
+    bool     tearingSupported = false;
+    bool     vsync = false;
+    bool     tornPresents = false;
+    unsigned bufferCount = 0;
+    unsigned maxFrameLatency = 0;
+    bool     statsValid = false;
+    int64_t  dropped = 0;
+};
+
+struct ExportContext
+{
+    const Tracker*                  tracker = nullptr;
+    const std::vector<TouchDevice>* devices = nullptr;
+    int                             activeDevice = -1;
+    const MonitorInfo*              monitor = nullptr;
+    const VBlankMeter*              vblank = nullptr;
+    const FrameStats*               frame = nullptr;
+    PresentInfo                     present;
+    int64_t                         sessionStartQpc = 0;
+    int64_t                         nowQpc = 0;
+};
+
+struct ExportResult
+{
+    bool                      ok = false;
+    std::wstring              dir;       // the per-run folder
+    std::wstring              stem;      // its name, touchrate_<timestamp>
+    std::wstring              summary;   // full path to README.md
+    std::vector<std::wstring> files;
+    std::string               error;
+    uint64_t                  sampleRows = 0;
+    uint64_t                  sampleBytesRaw = 0;   // sample CSV before compression
+    uint64_t                  sampleBytesGz = 0;    // and after
+};
+
+ExportResult ExportAll(const ExportContext& ctx, const std::wstring& baseDir);
+
+std::wstring DefaultExportDir();
+std::wstring TimeStampString();
+bool         EnsureDirectory(const std::wstring& path);
+std::wstring ExeDirectory();

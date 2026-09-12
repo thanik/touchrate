@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------- build output
+build/
+bin/
+obj/
+out/
+Debug/
+Release/
+x64/
+x86/
+ARM64/
+
+# Compiler and linker artefacts, wherever they land
+*.obj
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.idb
+*.res
+*.tlog
+*.iobj
+*.ipdb
+*.map
+*.manifest.res
+
+# --------------------------------------------------- measurement data from runs
+# Every [S] press writes exports/touchrate_<stamp>/ with a README.md summary,
+# summary.json and raw/*.csv. Those are throwaway session captures.
+#
+# To keep a measurement, copy its folder into results/ - that directory is
+# tracked, and the table in README.md links to what is in it.
+exports/
+
+# --------------------------------------------------------------- Visual Studio
+.vs/
+*.user
+*.suo
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+*.aps
+*.ncb
+*.opensdf
+*.sdf
+*.cachefile
+ipch/
+
+# ------------------------------------------------------------------- CMake etc.
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+_deps/
+
+# ------------------------------------------------------------------ editors/OS
+.vscode/
+.idea/
+.cache/
+*.swp
+*~
+Thumbs.db
+ehthumbs.db
+desktop.ini
+.DS_Store

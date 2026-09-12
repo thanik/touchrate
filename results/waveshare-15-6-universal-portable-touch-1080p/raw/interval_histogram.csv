@@ -1,0 +1,4 @@
+bin_index,interval_ms_low,interval_ms_high,interval_ms_center,count,fraction,hz_equivalent
+underflow,,,,0,0.000000000,
+80,8.0000,8.1000,8.0500,18428,1.000000000,124.224
+overflow,,,,0,0.000000000,
