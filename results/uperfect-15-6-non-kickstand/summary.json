@@ -1,0 +1,76 @@
+{
+  "tool": "TouchRate",
+  "generated": "2026-09-13T19:55:25",
+  "qpc_frequency": 10000000,
+  "session_seconds": 144.415,
+  "touching_seconds": 116.718,
+  "devices": [
+    {"index": 0, "active": true, "name": "ILITEK-TP", "manufacturer": "ILITEK", "vid": 8746, "pid": 1, "vid_hex": "222A", "pid_hex": "0001", "version": 2, "type": "Touch screen", "hid_usage_page": 13, "hid_usage": 4, "max_contacts_os": 10, "max_contacts_hid": 10, "input_report_bytes": 64, "device_extent": [30931, 17391], "display_extent": [1920, 1080], "steps_per_pixel": [16.109896, 16.102778], "path": "\\\\?\\HID#VID_222A&PID_0001&MI_00#a&5d4cede&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"},
+    {"index": 1, "active": false, "name": "\\??\\VIRTUAL_DIGITIZER", "manufacturer": "", "vid": 0, "pid": 0, "vid_hex": "0000", "pid_hex": "0000", "version": 1, "type": "Touch screen", "hid_usage_page": 13, "hid_usage": 4, "max_contacts_os": 2, "max_contacts_hid": 0, "input_report_bytes": 0, "device_extent": [54186, 53340], "display_extent": [2560, 2520], "steps_per_pixel": [21.166406, 21.166667], "path": "\\\\?\\VIRTUAL_DIGITIZER"}
+  ],
+  "display": {
+    "monitor": "",
+    "gdi_device": "\\\\.\\DISPLAY1",
+    "width": 1920, "height": 1080, "dpi": 120,
+    "nominal_hz": 60.000000, "nominal_exact": true,
+    "mode_table_hz": 60,
+    "dwm_hz": 180.001800, "dwm_period_ms": 5.555500,
+    "measured_vblank_valid": true,
+    "measured_vblank_hz": 59.999337, "measured_vblank_period_ms": 16.666851, "measured_vblank_sd_ms": 0.027681, "vblanks": 8691
+  },
+  "render": {
+    "adapter": "NVIDIA GeForce RTX 5090",
+    "vsync": false, "tearing_supported": true,
+    "buffer_count": 3, "max_frame_latency": 1,
+    "frames": 427981, "fps_now": 2515.000, "fps_mean": 2966.566, "fps_1pct_low": 1548.818,
+    "frame_ms_mean": 0.337090, "frame_ms_sd": 0.153689, "frame_ms_p99": 0.645654,
+    "presents_dropped": 0
+  },
+  "touch_rate": {
+    "history_recovery": true,
+    "frames": 15607, "samples": 106257, "history_samples": 0,
+    "pointer_messages": 15716, "raw_hid_reports": 15607,
+    "modal_hz": 124.2236, "mean_hz": 125.0000, "max_gap_ms": 8.0000,
+    "interval_p50_ms": 8.050000, "interval_p90_ms": 8.090000, "interval_p99_ms": 8.099000, "interval_p999_ms": 8.099900,
+    "interval_ms": {"n": 15605, "mean": 8.000000, "sd": 0.000000, "min": 8.000000, "max": 8.000000},
+    "by_contact_count": [
+      {"contacts": 1, "modal_hz": 124.2236, "mean_hz": 125.0000, "interval_mean_ms": 8.000000, "interval_sd_ms": 0.000000, "interval_min_ms": 8.000000, "interval_max_ms": 8.000000, "max_gap_ms": 8.000000, "samples": 1693},
+      {"contacts": 2, "modal_hz": 124.2236, "mean_hz": 125.0000, "interval_mean_ms": 8.000000, "interval_sd_ms": 0.000000, "interval_min_ms": 8.000000, "interval_max_ms": 8.000000, "max_gap_ms": 8.000000, "samples": 545},
+      {"contacts": 3, "modal_hz": 124.2236, "mean_hz": 125.0000, "interval_mean_ms": 8.000000, "interval_sd_ms": 0.000000, "interval_min_ms": 8.000000, "interval_max_ms": 8.000000, "max_gap_ms": 8.000000, "samples": 398},
+      {"contacts": 4, "modal_hz": 124.2236, "mean_hz": 125.0000, "interval_mean_ms": 8.000000, "interval_sd_ms": 0.000000, "interval_min_ms": 8.000000, "interval_max_ms": 8.000000, "max_gap_ms": 8.000000, "samples": 807},
+      {"contacts": 5, "modal_hz": 124.2236, "mean_hz": 125.0000, "interval_mean_ms": 8.000000, "interval_sd_ms": 0.000000, "interval_min_ms": 8.000000, "interval_max_ms": 8.000000, "max_gap_ms": 8.000000, "samples": 1624},
+      {"contacts": 6, "modal_hz": 124.2236, "mean_hz": 125.0000, "interval_mean_ms": 8.000000, "interval_sd_ms": 0.000000, "interval_min_ms": 8.000000, "interval_max_ms": 8.000000, "max_gap_ms": 8.000000, "samples": 1105},
+      {"contacts": 7, "modal_hz": 124.2236, "mean_hz": 125.0000, "interval_mean_ms": 8.000000, "interval_sd_ms": 0.000000, "interval_min_ms": 8.000000, "interval_max_ms": 8.000000, "max_gap_ms": 8.000000, "samples": 1873},
+      {"contacts": 8, "modal_hz": 124.2236, "mean_hz": 125.0000, "interval_mean_ms": 8.000000, "interval_sd_ms": 0.000000, "interval_min_ms": 8.000000, "interval_max_ms": 8.000000, "max_gap_ms": 8.000000, "samples": 1137},
+      {"contacts": 9, "modal_hz": 124.2236, "mean_hz": 125.0000, "interval_mean_ms": 8.000000, "interval_sd_ms": 0.000000, "interval_min_ms": 8.000000, "interval_max_ms": 8.000000, "max_gap_ms": 8.000000, "samples": 2137},
+      {"contacts": 10, "modal_hz": 124.2236, "mean_hz": 125.0000, "interval_mean_ms": 8.000000, "interval_sd_ms": 0.000000, "interval_min_ms": 8.000000, "interval_max_ms": 8.000000, "max_gap_ms": 8.000000, "samples": 4286}
+    ]
+  },
+  "latency": {
+    "p50_ms": 0.200000, "p90_ms": 1.120000, "p99_ms": 1.192000, "p999_ms": 1.199200,
+    "device_to_app_ms": {"n": 4, "mean": 0.454850, "sd": 0.457976, "min": 0.050000, "max": 1.009900}
+  },
+  "multitouch": {
+    "max_simultaneous": 10,
+    "counts_reached": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    "downs": 264, "ups": 264, "watchdog_released": 0,
+    "tap_interval_ms": {"n": 239, "mean": 518.518348, "sd": 1079.326994, "min": 8.000000, "max": 10720.000000},
+    "dwell_ms": {"n": 264, "mean": 3211.909091, "sd": 6471.174198, "min": 16.000000, "max": 46824.000000}
+  },
+  "position_processing": {
+    "processed_minus_raw_px": {"n": 106257, "mean": 0.000000, "sd": 0.000000, "min": 0.000000, "max": 0.000000}
+  },
+  "delivery": {
+    "hid_reports": 15607, "hid_frames": 15607,
+    "hid_touch_reports": 15605, "hid_no_tip_reports": 2, "hid_empty_reports": 0,
+    "panel_contacts": 264, "delivered": 264, "undelivered": 0,
+    "edge_band_px": 50,
+    "window": {"left": 0, "top": 0, "width": 1920, "height": 1080, "fullscreen": true, "edge_swipe_blocked": true},
+    "hid_descriptor": {"contact_slots": 10, "contact_count": true, "contact_id": true, "tip_switch": true, "confidence": false, "x_min": 0, "x_max": 9600, "y_min": 0, "y_max": 9600, "report_id": 4},
+    "match_offset_px": {"n": 264, "mean": 7.218705, "sd": 22.279385, "min": 0.037506, "max": 94.923185},
+    "delivered_edge_distance_px": {"n": 264, "mean": 214.840531, "sd": 140.517560, "min": 0.000000, "max": 536.599976},
+    "undelivered_edge_distance_px": {"n": 0}
+  },
+  "exported_sample_rows": 106257,
+  "samples_dropped_from_ring": 0
+}

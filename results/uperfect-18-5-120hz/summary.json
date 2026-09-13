@@ -1,0 +1,65 @@
+{
+  "tool": "TouchRate",
+  "generated": "2026-09-13T14:48:13",
+  "qpc_frequency": 10000000,
+  "session_seconds": 100.469,
+  "touching_seconds": 86.775,
+  "devices": [
+    {"index": 0, "active": true, "name": "ACDC Touch Input Device", "manufacturer": "ACDC Co., Ltd.", "vid": 13015, "pid": 16, "vid_hex": "32D7", "pid_hex": "0010", "version": 6, "type": "Touch screen", "hid_usage_page": 13, "hid_usage": 4, "max_contacts_os": 10, "max_contacts_hid": 10, "input_report_bytes": 64, "device_extent": [53001, 30001], "display_extent": [1920, 1080], "steps_per_pixel": [27.604688, 27.778704], "path": "\\\\?\\HID#VID_32D7&PID_0010&MI_00&Col01#a&19f8681&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"},
+    {"index": 1, "active": false, "name": "\\??\\VIRTUAL_DIGITIZER", "manufacturer": "", "vid": 0, "pid": 0, "vid_hex": "0000", "pid_hex": "0000", "version": 1, "type": "Touch screen", "hid_usage_page": 13, "hid_usage": 4, "max_contacts_os": 2, "max_contacts_hid": 0, "input_report_bytes": 0, "device_extent": [118533, 38100], "display_extent": [4480, 1440], "steps_per_pixel": [26.458259, 26.458333], "path": "\\\\?\\VIRTUAL_DIGITIZER"}
+  ],
+  "display": {
+    "monitor": "",
+    "gdi_device": "\\\\.\\DISPLAY2",
+    "width": 1920, "height": 1080, "dpi": 96,
+    "nominal_hz": 120.000000, "nominal_exact": true,
+    "mode_table_hz": 120,
+    "dwm_hz": 179.998560, "dwm_period_ms": 5.555600,
+    "measured_vblank_valid": true,
+    "measured_vblank_hz": 119.991346, "measured_vblank_period_ms": 8.333934, "measured_vblank_sd_ms": 0.048741, "vblanks": 12062
+  },
+  "render": {
+    "adapter": "NVIDIA GeForce RTX 5090",
+    "vsync": false, "tearing_supported": true,
+    "buffer_count": 3, "max_frame_latency": 1,
+    "frames": 354546, "fps_now": 3633.000, "fps_mean": 3534.024, "fps_1pct_low": 2025.997,
+    "frame_ms_mean": 0.282964, "frame_ms_sd": 0.091355, "frame_ms_p99": 0.493584,
+    "presents_dropped": 0
+  },
+  "touch_rate": {
+    "history_recovery": true,
+    "frames": 5039, "samples": 29653, "history_samples": 0,
+    "pointer_messages": 5046, "raw_hid_reports": 5044,
+    "modal_hz": 58.9971, "mean_hz": 58.0579, "max_gap_ms": 18.0680,
+    "interval_p50_ms": 17.025817, "interval_p90_ms": 18.008066, "interval_p99_ms": 18.090807, "interval_p999_ms": 18.099081,
+    "interval_ms": {"n": 5038, "mean": 17.224194, "sd": 0.418777, "min": 15.999200, "max": 18.068000},
+    "by_contact_count": [
+      {"contacts": 1, "modal_hz": 58.9971, "mean_hz": 58.0888, "interval_mean_ms": 17.215014, "interval_sd_ms": 0.414192, "interval_min_ms": 16.050800, "interval_max_ms": 18.055400, "max_gap_ms": 18.055400, "samples": 743},
+      {"contacts": 2, "modal_hz": 58.9971, "mean_hz": 58.0601, "interval_mean_ms": 17.223529, "interval_sd_ms": 0.417356, "interval_min_ms": 16.975100, "interval_max_ms": 18.025000, "max_gap_ms": 18.025000, "samples": 487},
+      {"contacts": 3, "modal_hz": 58.9971, "mean_hz": 58.0373, "interval_mean_ms": 17.230296, "interval_sd_ms": 0.421796, "interval_min_ms": 16.974500, "interval_max_ms": 18.026100, "max_gap_ms": 18.026100, "samples": 360},
+      {"contacts": 4, "modal_hz": 58.9971, "mean_hz": 58.0694, "interval_mean_ms": 17.220783, "interval_sd_ms": 0.416132, "interval_min_ms": 16.974600, "interval_max_ms": 18.024900, "max_gap_ms": 18.024900, "samples": 398},
+      {"contacts": 5, "modal_hz": 58.9971, "mean_hz": 58.0691, "interval_mean_ms": 17.220877, "interval_sd_ms": 0.415599, "interval_min_ms": 16.923100, "interval_max_ms": 18.068000, "max_gap_ms": 18.068000, "samples": 416},
+      {"contacts": 6, "modal_hz": 58.6510, "mean_hz": 58.0624, "interval_mean_ms": 17.222851, "interval_sd_ms": 0.417264, "interval_min_ms": 16.975800, "interval_max_ms": 18.016200, "max_gap_ms": 18.016200, "samples": 233},
+      {"contacts": 7, "modal_hz": 58.9971, "mean_hz": 58.0610, "interval_mean_ms": 17.223277, "interval_sd_ms": 0.415952, "interval_min_ms": 16.969000, "interval_max_ms": 18.021100, "max_gap_ms": 18.021100, "samples": 228},
+      {"contacts": 8, "modal_hz": 58.9971, "mean_hz": 58.0388, "interval_mean_ms": 17.229842, "interval_sd_ms": 0.420938, "interval_min_ms": 16.967000, "interval_max_ms": 18.024300, "max_gap_ms": 18.024300, "samples": 552},
+      {"contacts": 9, "modal_hz": 58.9971, "mean_hz": 58.0315, "interval_mean_ms": 17.232018, "interval_sd_ms": 0.423638, "interval_min_ms": 16.946500, "interval_max_ms": 18.038200, "max_gap_ms": 18.038200, "samples": 439},
+      {"contacts": 10, "modal_hz": 58.9971, "mean_hz": 58.0531, "interval_mean_ms": 17.225595, "interval_sd_ms": 0.422758, "interval_min_ms": 15.999200, "interval_max_ms": 18.054600, "max_gap_ms": 18.054600, "samples": 1182}
+    ]
+  },
+  "latency": {
+    "p50_ms": 0.297064, "p90_ms": 0.497209, "p99_ms": 0.598837, "p999_ms": 2.289117,
+    "device_to_app_ms": {"n": 29653, "mean": 0.304587, "sd": 0.145254, "min": 0.099800, "max": 3.762300}
+  },
+  "multitouch": {
+    "max_simultaneous": 10,
+    "counts_reached": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    "downs": 18, "ups": 18, "watchdog_released": 0,
+    "tap_interval_ms": {"n": 17, "mean": 4449.981124, "sd": 3358.768435, "min": 104.006600, "max": 12790.755400},
+    "dwell_ms": {"n": 18, "mean": 28360.844889, "sd": 20489.698948, "min": 326.989700, "max": 62788.930000}
+  },
+  "position_processing": {
+    "processed_minus_raw_px": {"n": 29653, "mean": 0.000000, "sd": 0.000000, "min": 0.000000, "max": 0.000000}
+  },
+  "exported_sample_rows": 29653,
+  "samples_dropped_from_ring": 0
+}
