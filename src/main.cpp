@@ -3,11 +3,13 @@
 //   recovery, Raw Input HID cross-check, and measurement export.
 #include "app.h"
 #include <shellapi.h>
+#include <propsys.h>
 #include <timeapi.h>
 #include <memory>
 
 static App* g_app = nullptr;
 static std::vector<uint8_t> g_rawBuf;
+static std::vector<HidContactSample> g_hidContacts;
 
 // ------------------------------------------------------------------- console
 
@@ -111,6 +113,30 @@ static void DisableTouchFeedback(HWND hwnd)
         SetWindowFeedbackSetting(hwnd, t, 0, sizeof off, &off);
 }
 
+// Windows reserves the screen edges for swipe gestures and hands a touch that
+// starts there to the shell instead of the window under the finger. A window
+// can opt out while it is full screen; a measurement tool must, or it reports
+// the panel as dead along its edges.
+static bool BlockEdgeSwipes(HWND hwnd)
+{
+    // PKEY_EdgeGesture_DisableTouchWhenFullscreen, defined locally so no
+    // translation unit needs INITGUID.
+    static const PROPERTYKEY kDisableTouchWhenFullscreen = {
+        { 0x32CE38B2, 0x2C9A, 0x41B1, { 0x9B, 0xC5, 0xB3, 0x78, 0x43, 0x94, 0xAA, 0x44 } }, 2
+    };
+    IPropertyStore* store = nullptr;
+    if (FAILED(SHGetPropertyStoreForWindow(hwnd, IID_PPV_ARGS(&store))) || !store) return false;
+
+    PROPVARIANT v;
+    PropVariantInit(&v);
+    v.vt = VT_BOOL;
+    v.boolVal = VARIANT_TRUE;
+    const HRESULT hr = store->SetValue(kDisableTouchWhenFullscreen, v);
+    if (SUCCEEDED(hr)) store->Commit();
+    store->Release();
+    return SUCCEEDED(hr);
+}
+
 static int RegisterDigitizerRawInput(HWND hwnd)
 {
     // Reading the digitizer through Raw Input gives a report count that never
@@ -191,6 +217,17 @@ static void DoExport(App& app)
     ctx.tracker = &app.tracker;
     ctx.devices = &app.devices;
     ctx.activeDevice = app.activeDevice;
+    ctx.hid = &app.hid;
+    {
+        RECT rc{};
+        GetClientRect(app.hwnd, &rc);
+        POINT tl{ rc.left, rc.top }, br{ rc.right, rc.bottom };
+        ClientToScreen(app.hwnd, &tl);
+        ClientToScreen(app.hwnd, &br);
+        ctx.window.client = RECT{ tl.x, tl.y, br.x, br.y };
+        ctx.window.fullscreen = app.view.fullscreen;
+        ctx.window.edgeSwipeBlocked = app.EdgeSwipeBlocked();
+    }
     ctx.monitor = &app.monitor;
     ctx.vblank = &app.vblank;
     ctx.frame = &app.frame;
@@ -336,7 +373,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 {
                     const RAWINPUT* ri = (const RAWINPUT*)g_rawBuf.data();
                     if (ri->header.dwType == RIM_TYPEHID)
-                        app->tracker.HandleRawHidReports(ri->data.hid.dwCount, QpcNow());
+                    {
+                        // Several reports can be batched into one message. Only
+                        // reports that decode as touch reports are counted, so a
+                        // pen or configuration collection cannot skew the totals.
+                        const RAWHID& hid = ri->data.hid;
+                        const int64_t now = QpcNow();
+                        for (DWORD i = 0; i < hid.dwCount; ++i)
+                        {
+                            const BYTE* report = hid.bRawData + (size_t)i * hid.dwSizeHid;
+                            g_hidContacts.clear();
+                            HidReportInfo info;
+                            if (app->hid.Decode(ri->header.hDevice, report, hid.dwSizeHid, g_hidContacts, info))
+                                app->tracker.HandleHidReport(g_hidContacts, info, now);
+                        }
+                    }
                 }
             }
         }
@@ -344,6 +395,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_POINTERDEVICECHANGE:
+        // Handles and descriptors may have changed; decode afresh.
+        if (app) { app->hid.Reset(); RefreshDevices(*app, false); }
+        return 0;
+
     case WM_POINTERDEVICEINRANGE:
     case WM_POINTERDEVICEOUTOFRANGE:
         if (app) RefreshDevices(*app, false);
@@ -469,6 +524,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     app.startQpc = QpcNow();
     app.nowQpc = app.startQpc;
 
+    // The shell property store used to block edge swipes is a COM interface.
+    const HRESULT comInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
     // A measurement tool should not be the thing that adds the jitter.
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
@@ -499,6 +557,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     app.tracker.SetWindow(app.hwnd);
     DisableTouchFeedback(app.hwnd);
     RegisterDigitizerRawInput(app.hwnd);
+    app.edgeSwipeApplied = BlockEdgeSwipes(app.hwnd);
 
     UINT dpi = GetDpiForWindow(app.hwnd);
     if (!app.rend.Init(app.hwnd, dpi))
@@ -560,6 +619,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
         POINT origin{ 0, 0 };
         ClientToScreen(app.hwnd, &origin);
         app.tracker.SetClientOrigin(origin);
+        app.tracker.SetEdgeSwipeBlocked(app.EdgeSwipeBlocked());
         app.tracker.Update(app.nowQpc);
 
         app.rend.WaitForPresentSlot();
@@ -578,6 +638,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     app.vblank.Stop();
     app.rend.Shutdown();
     timeEndPeriod(1);
+    if (SUCCEEDED(comInit)) CoUninitialize();
     g_app = nullptr;
     return 0;
 }

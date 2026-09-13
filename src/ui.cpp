@@ -19,6 +19,43 @@ constexpr float kColumnA = 0.58f;   // the stats column background
 constexpr float kBlockA  = 0.55f;   // a block nested inside that column
 constexpr float kBarA    = 0.88f;   // header and footer
 
+// Vertical metrics of the stats column. Computed in one place so the layout that
+// sizes the column and the code that draws it cannot disagree.
+struct StatsMetrics
+{
+    float pad, rowH, titleH, chrome, gap, pipR;
+    float hTiming, hDeliver, hDisplay, hMulti, hCounters;
+    float heroMin, heroMax;
+    float fixedH;                 // everything except the hero and counters
+    float Need() const { return fixedH + heroMin; }
+};
+
+// Compact spacing is for short screens - a 1080p panel at 125% scaling cannot
+// hold the natural spacing, and the column would otherwise run under the strip.
+StatsMetrics MeasureStats(const Renderer& r, bool compact)
+{
+    const float s = r.Scale();
+    StatsMetrics m{};
+    m.pad    = (compact ? 8 : 12) * s;
+    m.rowH   = std::round(r.FontHeight(F_BODY) * (compact ? 1.02f : 1.18f));
+    m.titleH = std::round(r.FontHeight(F_TINY) * (compact ? 1.35f : 1.6f) + (compact ? 2 : 4) * s);
+    m.chrome = m.titleH + (compact ? 3 : 6) * s;
+    m.gap    = compact ? std::round(3 * s) : std::round(m.pad * 0.55f);
+    m.pipR   = (compact ? 9 : 11) * s;
+
+    m.hTiming  = m.rowH * 6 + m.chrome;
+    m.hDeliver = m.rowH * 5 + m.chrome;
+    m.hDisplay = m.rowH * 5 + m.chrome;
+    // Extra line under the pips carries the measured rate at each contact count.
+    m.hMulti   = m.titleH + m.rowH * 2 + 4 * s + m.pipR * 2
+               + r.FontHeight(F_TINY) * 1.35f + (compact ? 4 : 8) * s;
+    m.hCounters = r.FontHeight(F_TINY) * 1.25f * 2 + 6 * s;
+    m.heroMin  = r.FontHeight(F_HEAD) + m.chrome;
+    m.heroMax  = r.FontHeight(F_HERO) + m.chrome;
+    m.fixedH   = m.hTiming + m.hDeliver + m.hDisplay + m.hMulti + m.gap * 4 + m.pad * 2;
+    return m;
+}
+
 Layout ComputeLayout(const Renderer& r)
 {
     const float s = r.Scale();
@@ -27,8 +64,14 @@ Layout ComputeLayout(const Renderer& r)
     Layout L;
     const float headerH = std::round(86 * s);
     const float footerH = std::round(26 * s);
-    const float stripH  = std::round(std::min(200.f * s, std::max(140.f * s, H * 0.22f)));
+    float stripH = std::round(std::min(200.f * s, std::max(140.f * s, H * 0.22f)));
     const float statsW  = std::round(std::min(560.f * s, std::max(320.f * s, W * 0.36f)));
+
+    // If even compact spacing cannot fit the stats column, take the difference
+    // from the graph strip, which degrades far more gracefully.
+    const float compactNeed = MeasureStats(r, true).Need();
+    if (H - headerH - footerH - stripH < compactNeed)
+        stripH = std::round(std::max(110.f * s, H - headerH - footerH - compactNeed));
 
     L.header = { 0, 0, W, headerH };
     L.footer = { 0, H - footerH, W, footerH };
@@ -360,6 +403,55 @@ static void DrawContacts(App& app, const Rect2& box)
     }
 }
 
+// Touches the panel reported that Windows did not deliver. These are exactly
+// the touches that otherwise leave no trace on screen, so they are drawn over
+// everything. Positions come from the panel's own HID coordinates.
+static void DrawUndelivered(App& app, const Rect2& box)
+{
+    Renderer& r = app.rend;
+    const Tracker& t = app.tracker;
+    const float s = r.Scale();
+    const POINT o = t.ClientOrigin();
+    const int64_t now = app.nowQpc;
+
+    // Settled ones stay as markers until the ink is cleared.
+    const std::vector<UndeliveredTouch>& und = t.Undelivered();
+    for (size_t i = t.UndeliveredMarkStart(); i < und.size(); ++i)
+    {
+        const UndeliveredTouch& u = und[i];
+        if (!u.mapped) continue;
+        const float x = u.x - (float)o.x, y = u.y - (float)o.y;
+        if (!box.Contains(x, y)) continue;
+        r.RingShape(x, y, 13 * s, Pal::bad.WithA(0.55f));
+        r.Cross(x, y, 7 * s, std::max(1.f, 2 * s), Pal::bad.WithA(0.9f));
+    }
+
+    // A live contact becomes suspect only after the normal few-millisecond
+    // gap between a raw report and its pointer message has clearly passed.
+    const float pulse = 0.55f + 0.45f * (float)std::sin(QpcToSec(now) * 12.0);
+    for (const HidTrack& h : t.HidTracks())
+    {
+        if (h.delivered || h.ended || !h.mapped) continue;
+        if (QpcToMs(now - h.firstQpc) < 60.0) continue;
+
+        const float x = h.sx - (float)o.x, y = h.sy - (float)o.y;
+        r.Glow(x, y, 60 * s, Pal::bad.WithA(0.22f * pulse));
+        r.RingShape(x, y, 34 * s, Pal::bad.WithA(pulse));
+        r.Cross(x, y, 11 * s, std::max(1.f, 2 * s), Pal::bad);
+
+        // The finger is usually at the edge, so put the label towards the centre.
+        const char* msg = "panel touch not delivered by Windows";
+        const float tw = r.TextW(F_BODY, msg), th = r.FontHeight(F_BODY);
+        float lx = (x > box.x + box.w * 0.5f) ? x - 44 * s - tw : x + 44 * s;
+        float ly = (y > box.y + box.h * 0.5f) ? y - 44 * s - th : y + 44 * s;
+        lx = Clampf(lx, box.x + 6 * s, box.r() - tw - 6 * s);
+        ly = Clampf(ly, box.y + 6 * s, box.b() - th - 6 * s);
+        r.FillRect(Rect2{ lx - 6 * s, ly - 3 * s, tw + 12 * s, th + 6 * s }, Color(0.05f, 0.02f, 0.03f, 0.88f));
+        r.FrameRect(Rect2{ lx - 6 * s, ly - 3 * s, tw + 12 * s, th + 6 * s }, 1.f, Pal::bad);
+        r.Text(F_BODY, lx, ly, Pal::bad, msg);
+    }
+}
+
 // ================================================================ stats panel
 
 static void DrawStats(App& app, const Rect2& box)
@@ -372,13 +464,13 @@ static void DrawStats(App& app, const Rect2& box)
     r.FillRect(box, Pal::panel2.WithA(kColumnA));
     r.FillRect(Rect2{ box.x, box.y, 1, box.h }, Pal::edge);
 
-    const float pad = 12 * s;
+    StatsMetrics m = MeasureStats(r, false);
+    if (box.h < m.Need()) m = MeasureStats(r, true);
+    const float pad = m.pad, rowH = m.rowH, titleH = m.titleH, gap = m.gap, pipR = m.pipR;
+    const float hTiming = m.hTiming, hDeliver = m.hDeliver, hDisplay = m.hDisplay, hMulti = m.hMulti;
+    const float chrome = m.chrome;
     const float bw = box.w - pad * 2;
     const float bx = box.x + pad;
-    const float rowH = std::round(r.FontHeight(F_BODY) * 1.18f);
-    const float titleH = std::round(r.FontHeight(F_TINY) * 1.6f + 4 * s);
-    const float chrome = titleH + 6 * s;                        // title + bottom margin
-    const float gap = std::round(pad * 0.55f);
 
     const double liveHz = t.FrameHz(now);
     const double modeHz = t.ModeHz();
@@ -388,22 +480,11 @@ static void DrawStats(App& app, const Rect2& box)
 
     // Give the hero block whatever is left after the fixed-size blocks, so a
     // short window shrinks the big number instead of clipping the last panel.
-    const float pipR = 11 * s;
-    const float hTiming = rowH * 6 + chrome;
-    const float hDeliver = rowH * 5 + chrome;
-    const float hDisplay = rowH * 5 + chrome;
-    // Extra line under the pips carries the measured rate at each contact count.
-    const float hMulti = titleH + rowH * 2 + 4 * s + pipR * 2
-                       + r.FontHeight(F_TINY) * 1.35f + 8 * s;
-    const float hCounters = r.FontHeight(F_TINY) * 1.25f * 2 + 6 * s;
-    const float fixedH = hTiming + hDeliver + hDisplay + hMulti + gap * 4 + pad * 2;
-
-    float heroH = box.h - fixedH - hCounters;
-    const float heroMin = r.FontHeight(F_HEAD) + chrome;
-    const float heroMax = r.FontHeight(F_HERO) + chrome;
-    bool roomForCounters = heroH >= heroMin;
-    if (!roomForCounters) heroH = box.h - fixedH;          // drop the counters first
-    heroH = Clampf(heroH, heroMin, heroMax);
+    float heroH = box.h - m.fixedH - m.hCounters;
+    bool roomForCounters = heroH >= m.heroMin;
+    if (!roomForCounters) heroH = box.h - m.fixedH;        // drop the counters first
+    heroH = Clampf(heroH, m.heroMin, m.heroMax);
+    (void)chrome;
 
     float y = box.y + pad;
 
@@ -442,6 +523,7 @@ static void DrawStats(App& app, const Rect2& box)
         Rect2 b{ bx, y, bw, hTiming };
         Block(r, b, "REPORT TIMING", kBlockA);
         Col c(r, Rect2{ b.x + 10 * s, b.y + titleH, bw - 20 * s, 0 });
+        c.lh = rowH;
         if (iv.n)
         {
             c.Row("interval  mean", Pal::text, "%.3f ms", iv.mean);
@@ -462,10 +544,16 @@ static void DrawStats(App& app, const Rect2& box)
             c.Row("worst gap", Pal::textFaint, "--");
         }
         double hidHz = t.HidReportHz(now);
-        if (t.HidSeen())
-            c.Row("raw HID reports", Pal::accent, "%.0f /s", hidHz);
-        else
+        // Raw HID and delivery share a row: a lost touch is the thing to see.
+        if (!t.HidSeen())
             c.Row("raw HID reports", Pal::textFaint, "not observed");
+        else if (t.HidUndelivered())
+            c.Row("raw HID reports", Pal::bad, "%.0f /s   %llu touch%s lost", hidHz,
+                  (unsigned long long)t.HidUndelivered(), t.HidUndelivered() == 1 ? "" : "es");
+        else if (t.HidContacts())
+            c.Row("raw HID reports", Pal::accent, "%.0f /s   none lost", hidHz);
+        else
+            c.Row("raw HID reports", Pal::accent, "%.0f /s", hidHz);
         y = b.b() + gap;
     }
 
@@ -474,6 +562,7 @@ static void DrawStats(App& app, const Rect2& box)
         Rect2 b{ bx, y, bw, hDeliver };
         Block(r, b, "DELIVERY  (device timestamp -> app)", kBlockA);
         Col c(r, Rect2{ b.x + 10 * s, b.y + titleH, bw - 20 * s, 0 });
+        c.lh = rowH;
         const Stats& la = t.LatencyMs();
         if (la.n)
         {
@@ -500,6 +589,7 @@ static void DrawStats(App& app, const Rect2& box)
         Rect2 b{ bx, y, bw, hDisplay };
         Block(r, b, "DISPLAY & FRAME RATE", kBlockA);
         Col c(r, Rect2{ b.x + 10 * s, b.y + titleH, bw - 20 * s, 0 });
+        c.lh = rowH;
 
         c.Row("render", app.frame.windowHz > 0 ? Pal::good : Pal::textFaint,
               "%.0f fps   %.2f ms", app.frame.windowHz, app.frame.curMs);
@@ -526,6 +616,7 @@ static void DrawStats(App& app, const Rect2& box)
         Rect2 b{ bx, y, bw, hMulti };
         Block(r, b, "MULTI-TOUCH  (10 finger test, modal Hz per count)", kBlockA);
         Col c(r, Rect2{ b.x + 10 * s, b.y + titleH, bw - 20 * s, 0 });
+        c.lh = rowH;
 
         // The HID descriptor is the hardware truth; Windows often advertises a
         // larger figure than the panel can actually report at once.
@@ -853,8 +944,8 @@ static void DrawFooter(App& app, const Rect2& box)
     else
     {
         r.Text(F_TINY, 14 * s, ty, Pal::textFaint,
-               "[S] export   [L] live log   [O] open folder   [R] reset   [C] clear ink   "
-               "[V] vsync   [H] history   [T] trails   [G] grid   [D] devices   [F] full screen   "
+               "[S] export   [L] live log   [O] open folder   [R] reset   [C] clear   "
+               "[V] vsync   [H] history   [T] trails   [G] grid   [F] full screen   "
                "[F1] help   [Esc] quit");
     }
 
@@ -865,12 +956,12 @@ static void DrawFooter(App& app, const Rect2& box)
     rx -= r.TextW(F_TINY, "session 0000 s   touching 0000 s") + 18 * s;
 
     // Recording state has to stay visible whatever else the footer is saying.
+    char rec[96];
     if (app.tracker.LiveLogging())
-        r.TextRight(F_TINY, rx, ty, Pal::good, "* LOGGING %llu rows",
-                    (unsigned long long)app.tracker.LiveLogRows());
+        snprintf(rec, sizeof rec, "* LOGGING %llu rows", (unsigned long long)app.tracker.LiveLogRows());
     else
-        r.TextRight(F_TINY, rx, ty, Pal::textFaint, "%zu rows buffered",
-                    app.tracker.RecordCount());
+        snprintf(rec, sizeof rec, "%zu rows buffered", app.tracker.RecordCount());
+    r.TextRight(F_TINY, rx, ty, app.tracker.LiveLogging() ? Pal::good : Pal::textFaint, "%s", rec);
 }
 
 struct HelpKey { const char* k; const char* v; };
@@ -886,7 +977,7 @@ static const HelpKey kHelpKeys[] = {
     { "T / G", "Toggle trails / background grid" },
     { "I / P", "Toggle accumulated ink / sample dots" },
     { "D",     "Re-enumerate touch devices" },
-    { "F",     "Borderless full screen" },
+    { "F",     "Borderless full screen - also stops Windows taking edge touches" },
     { "F1",    "This help" },
     { "Esc",   "Quit" },
 };
@@ -910,6 +1001,10 @@ static const char* kHelpNotes[] = {
     "Raw HID reports come straight from the digitizer",
     "through Raw Input, bypassing the pointer stack.",
     "Matching counts mean nothing is being lost.",
+    "",
+    "A red cross marks a touch the panel reported that",
+    "Windows never delivered. Outside full screen, the",
+    "shell takes touches at the screen edges for swipes.",
     "",
     "Measured refresh times real vblanks on a dedicated",
     "thread, so it shows the panel's true rate rather",
@@ -1015,5 +1110,6 @@ void DrawUi(App& app)
     DrawTable(app, L.table);
     DrawFooter(app, L.footer);
     DrawContacts(app, L.canvas);
+    DrawUndelivered(app, L.canvas);
     if (app.view.showHelp) DrawHelp(app);
 }

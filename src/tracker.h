@@ -1,6 +1,7 @@
 // TouchRate - touch sample ingestion and measurement
 #pragma once
 #include "common.h"
+#include "hidtouch.h"
 
 enum SampleKind : uint8_t { SK_DOWN = 0, SK_UPDATE = 1, SK_UP = 2 };
 
@@ -35,6 +36,35 @@ struct ExportRec
     float    pressure = -1, cw = -1, ch = -1, orient = -1;
     float    dtMs = 0, latencyMs = 0;
     uint8_t  slot = 0, kind = SK_UPDATE, fromHistory = 0, pointerType = 0;
+};
+
+// A contact as the panel itself reported it, followed from first touching
+// report to lift, and matched against the pointer contacts Windows delivered.
+struct HidTrack
+{
+    uint32_t id = 0;
+    bool     ended = false;
+    bool     delivered = false;
+    bool     mapped = false;
+    bool     edgeSwipeBlocked = false;   // blocking was in effect when it started
+    float    sx = 0, sy = 0;             // latest screen position
+    float    firstX = 0, firstY = 0;
+    int64_t  firstQpc = 0, lastQpc = 0, endQpc = 0;
+    uint32_t reports = 0;
+    double   edgeDistPx = 1e9;           // closest approach to the display edge
+};
+
+// A panel contact that Windows never turned into pointer input.
+struct UndeliveredTouch
+{
+    int64_t  qpc = 0;
+    float    x = 0, y = 0;               // where it started, screen pixels
+    float    lastX = 0, lastY = 0;
+    double   durationMs = 0;
+    uint32_t reports = 0;
+    double   edgeDistPx = 0;
+    bool     mapped = false;
+    bool     edgeSwipeBlocked = false;
 };
 
 struct Contact
@@ -84,13 +114,19 @@ public:
 
     void SetWindow(HWND h) { m_hwnd = h; }
     void SetClientOrigin(POINT p) { m_clientOrigin = p; }
+    POINT ClientOrigin() const { return m_clientOrigin; }
     void SetUseHistory(bool v) { m_useHistory = v; }
     bool UseHistory() const { return m_useHistory; }
 
     // Called from the window procedure. Returns accepted sample count.
     int  HandlePointerMessage(UINT msg, WPARAM wParam, int64_t hostQpc);
-    void HandleRawHidReports(uint32_t reports, int64_t hostQpc);
+    // One decoded HID touch report from the digitizer, via Raw Input.
+    void HandleHidReport(const std::vector<HidContactSample>& contacts,
+                         const HidReportInfo& info, int64_t now);
     void Update(int64_t now);   // per-frame bookkeeping
+
+    // Whether Windows edge-swipe gestures are currently blocked for the window.
+    void SetEdgeSwipeBlocked(bool v) { m_edgeSwipeBlocked = v; }
 
     // ---- live state
     const Contact& Slot(int i) const { return m_slots[i]; }
@@ -106,6 +142,23 @@ public:
     double MessageHz(int64_t now) const { return m_msgRate.Hz(now); }
     double HidReportHz(int64_t now) const { return m_hidRate.Hz(now); }
     bool   HidSeen() const { return m_hidReports > 0; }
+
+    // ---- delivery: what the panel reported versus what reached the app
+    uint64_t HidFrames()        const { return m_hidFrames; }
+    uint64_t HidTouchReports()  const { return m_hidTouchReports; }
+    uint64_t HidNoTipReports()  const { return m_hidNoTipReports; }
+    uint64_t HidEmptyReports()  const { return m_hidEmptyReports; }
+    uint64_t HidContacts()      const { return m_hidContacts; }
+    uint64_t HidDelivered()     const { return m_hidDelivered; }
+    uint64_t HidUndelivered()   const { return m_hidUndelivered; }
+    uint64_t UndeliveredDropped() const { return m_undeliveredDropped; }
+    const Stats& HidMatchOffsetPx()    const { return m_hidMatchOffset; }
+    const Stats& DeliveredEdgeDist()   const { return m_deliveredEdge; }
+    const Stats& UndeliveredEdgeDist() const { return m_undeliveredEdge; }
+    const std::vector<UndeliveredTouch>& Undelivered() const { return m_undelivered; }
+    size_t UndeliveredMarkStart() const { return m_undeliveredMarkStart; }
+    const std::vector<HidTrack>& HidTracks() const { return m_hidTracks; }
+    bool HidDisplay(RECT& r) const { r = m_hidDisplay; return m_hidHaveDisplay; }
 
     // ---- statistics
     const Stats& IntervalMs() const { return m_intervalMs; }
@@ -180,6 +233,9 @@ private:
     void AcceptSample(const POINTER_TOUCH_INFO& ti, int64_t hostQpc, bool fromHistory, bool isUp);
     void AddFrameInterval(int64_t devQpc);
     void EndFrame(int64_t devQpc);
+    void MatchPointerToHid(float screenX, float screenY, int64_t hostQpc);
+    void MatchHidToPointers(HidTrack& t);
+    void FinalizeHidTrack(const HidTrack& t);
     int  AssignSlot(uint32_t pointerId);
     int  FindSlot(uint32_t pointerId) const;
     void ReleaseSlot(int slot, int64_t qpc, bool genuine = true);
@@ -223,6 +279,18 @@ private:
 
     HANDLE   m_lastSourceDevice = nullptr;
     uint32_t m_lastPointerType = 0;
+
+    // Delivery tracking.
+    bool     m_edgeSwipeBlocked = false;
+    std::vector<HidTrack>         m_hidTracks;      // live and settling
+    std::vector<UndeliveredTouch> m_undelivered;
+    size_t   m_undeliveredMarkStart = 0;            // first marker still drawn
+    uint64_t m_undeliveredDropped = 0;
+    uint64_t m_hidFrames = 0, m_hidTouchReports = 0, m_hidNoTipReports = 0, m_hidEmptyReports = 0;
+    uint64_t m_hidContacts = 0, m_hidDelivered = 0, m_hidUndelivered = 0;
+    Stats    m_hidMatchOffset, m_deliveredEdge, m_undeliveredEdge;
+    RECT     m_hidDisplay{};
+    bool     m_hidHaveDisplay = false;
 
     bool     m_hmSeen = false;
     int32_t  m_hmMinX = 0, m_hmMinY = 0, m_hmMaxX = 0, m_hmMaxY = 0;

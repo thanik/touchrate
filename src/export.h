@@ -17,11 +17,20 @@ struct PresentInfo
     int64_t  dropped = 0;
 };
 
+struct WindowInfo
+{
+    RECT client{};              // client area in screen coordinates
+    bool fullscreen = false;
+    bool edgeSwipeBlocked = false;   // in effect: always requested, honoured in full screen
+};
+
 struct ExportContext
 {
     const Tracker*                  tracker = nullptr;
     const std::vector<TouchDevice>* devices = nullptr;
     int                             activeDevice = -1;
+    HidTouchDecoder*                hid = nullptr;
+    WindowInfo                      window;
     const MonitorInfo*              monitor = nullptr;
     const VBlankMeter*              vblank = nullptr;
     const FrameStats*               frame = nullptr;

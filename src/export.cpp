@@ -244,6 +244,157 @@ void MdDevice(Out& o, const TouchDevice& d, bool active)
     o.S("\n");
 }
 
+constexpr double kEdgeBandPx = 50.0;   // "at the edge", stated in the report
+
+// What the panel reported against what Windows delivered, and why they differ.
+void MdDelivery(Out& o, const ExportContext& ctx)
+{
+    const Tracker& t = *ctx.tracker;
+    o.S("## Touch delivery\n\n");
+    o.S("Contacts the panel itself reported, decoded from its raw HID reports, compared\n"
+        "with the pointer contacts Windows delivered to the app. A contact that appears\n"
+        "in the first but not the second never reached the application at all.\n\n");
+
+    // Describe the device that reported, or failing that the active digitizer,
+    // so what the panel can express is on record even without touch data.
+    HidDescriptorInfo di;
+    bool haveDesc = false;
+    if (ctx.hid)
+    {
+        if (ctx.hid->LastDevice()) haveDesc = ctx.hid->Describe(ctx.hid->LastDevice(), di);
+        if (!haveDesc && ctx.devices && !ctx.devices->empty())
+        {
+            const size_t idx = ctx.activeDevice >= 0 ? (size_t)ctx.activeDevice : 0;
+            if (idx < ctx.devices->size() && (*ctx.devices)[idx].rawHandle)
+                haveDesc = ctx.hid->Describe((*ctx.devices)[idx].rawHandle, di);
+        }
+    }
+    const WindowInfo& w = ctx.window;
+
+    if (!t.HidSeen())
+    {
+        o.S("No decodable HID touch reports were received, so delivery could not be checked.\n\n");
+        if (haveDesc)
+            o.P("The digitizer's descriptor declares %u contact slots, TipSwitch %s, Confidence %s,\n"
+                "X %d..%d and Y %d..%d.\n\n",
+                di.fingerCollections, di.hasTipSwitch ? "yes" : "no", di.hasConfidence ? "yes" : "no",
+                di.xMin, di.xMax, di.yMin, di.yMax);
+        return;
+    }
+
+    o.S("| Metric | Value |\n| --- | --- |\n");
+    o.P("| Panel contacts (TipSwitch set) | %llu |\n", (unsigned long long)t.HidContacts());
+    o.P("| Delivered to the app | %llu |\n", (unsigned long long)t.HidDelivered());
+    o.P("| **Not delivered** | **%llu** |\n", (unsigned long long)t.HidUndelivered());
+    o.P("| HID reports: touching / not touching / empty | %llu / %llu / %llu |\n",
+        (unsigned long long)t.HidTouchReports(), (unsigned long long)t.HidNoTipReports(),
+        (unsigned long long)t.HidEmptyReports());
+    o.P("| HID frames / pointer input frames | %llu / %llu |\n",
+        (unsigned long long)t.HidFrames(), (unsigned long long)t.TotalFrames());
+    o.P("| Window at export | %ld × %ld at (%ld, %ld), %s |\n",
+        w.client.right - w.client.left, w.client.bottom - w.client.top,
+        w.client.left, w.client.top, w.fullscreen ? "full screen" : "windowed");
+    o.P("| Edge-swipe blocking at export | %s |\n",
+        w.edgeSwipeBlocked ? "in effect" : "not in effect: the window was not full screen");
+    if (t.HidMatchOffsetPx().n)
+        o.P("| Position mapping check | %.1f px mean offset across %llu matched samples |\n",
+            t.HidMatchOffsetPx().mean, (unsigned long long)t.HidMatchOffsetPx().n);
+    if (haveDesc)
+        o.P("| HID descriptor | %u contact slots; TipSwitch %s; Confidence %s; X %d..%d, Y %d..%d |\n",
+            di.fingerCollections, di.hasTipSwitch ? "yes" : "no", di.hasConfidence ? "yes" : "no",
+            di.xMin, di.xMax, di.yMin, di.yMax);
+    o.S("\n");
+
+    const std::vector<UndeliveredTouch>& und = t.Undelivered();
+    if (!und.empty())
+    {
+        const size_t shown = std::min<size_t>(und.size(), 25);
+        o.S("| # | At | Start x, y | End x, y | Duration | Reports | From edge | Edge swipe blocked |\n");
+        o.S("| ---: | ---: | --- | --- | ---: | ---: | ---: | --- |\n");
+        for (size_t i = 0; i < shown; ++i)
+        {
+            const UndeliveredTouch& u = und[i];
+            char edge[32] = "-";
+            if (u.mapped) snprintf(edge, sizeof edge, "%.0f px", u.edgeDistPx);
+            o.P("| %zu | %.2f s | %.0f, %.0f | %.0f, %.0f | %.0f ms | %u | %s | %s |\n",
+                i + 1, QpcToSec(u.qpc - ctx.sessionStartQpc), u.x, u.y, u.lastX, u.lastY,
+                u.durationMs, u.reports, edge, u.edgeSwipeBlocked ? "yes" : "no");
+        }
+        o.S("\n");
+        if (und.size() > shown)
+            o.P("%zu more in [`raw/undelivered_touches.csv`](raw/undelivered_touches.csv).\n\n",
+                und.size() - shown);
+    }
+
+    o.S("### Diagnosis\n\n");
+    const uint64_t lost = t.HidUndelivered();
+
+    if (t.HidContacts() == 0)
+    {
+        if (t.HidNoTipReports() + t.HidEmptyReports() > 0 && t.TotalFrames() == 0)
+            o.P("The panel sent %llu reports but never flagged a contact as touching. Whatever it\n"
+                "detected, it did not report as a touch, which points at the panel's own firmware\n"
+                "(edge or palm rejection) rather than at Windows.\n\n",
+                (unsigned long long)(t.HidNoTipReports() + t.HidEmptyReports()));
+        else
+            o.S("No panel contacts were recorded in this session.\n\n");
+        return;
+    }
+
+    if (lost == 0)
+    {
+        o.P("Every one of the %llu contacts the panel reported was delivered to the app.\n\n",
+            (unsigned long long)t.HidContacts());
+        return;
+    }
+
+    size_t mapped = 0, nearEdge = 0, withoutBlock = 0;
+    for (const UndeliveredTouch& u : und)
+    {
+        if (!u.edgeSwipeBlocked) ++withoutBlock;
+        if (!u.mapped) continue;
+        ++mapped;
+        if (u.edgeDistPx <= kEdgeBandPx) ++nearEdge;
+    }
+
+    o.P("**%llu contact%s the panel reported as touching never reached the app.** The\n"
+        "panel detected %s and flagged %s as touching, so the loss happened in Windows,\n"
+        "not in the panel.\n\n",
+        (unsigned long long)lost, lost == 1 ? "" : "s",
+        lost == 1 ? "it" : "them", lost == 1 ? "it" : "them");
+
+    if (mapped)
+    {
+        o.P("%zu of %zu started within %.0f px of the display edge", nearEdge, mapped, kEdgeBandPx);
+        if (t.UndeliveredEdgeDist().n && t.DeliveredEdgeDist().n)
+            o.P(" (closest approach to the edge averaged %.0f px, against %.0f px for delivered contacts)",
+                t.UndeliveredEdgeDist().mean, t.DeliveredEdgeDist().mean);
+        o.S(".\n\n");
+    }
+
+    if (mapped && nearEdge * 2 >= mapped)
+    {
+        if (withoutBlock > 0)
+            o.P("%zu of them happened while the window was not full screen, so edge-swipe blocking\n"
+                "was not in effect. Windows claims touches that start at the screen edge for its\n"
+                "swipe gestures and never passes them to the window under the finger, so that is the\n"
+                "expected cause. Retest in full screen (`F`), where TouchRate blocks edge swipes.\n\n",
+                withoutBlock);
+        else
+            o.S("All of them happened with edge-swipe blocking in effect, so Windows' edge gestures\n"
+                "are not the cause. Check for a window sitting above TouchRate along that edge -\n"
+                "the taskbar is the usual one - or a system setting that reserves the edge.\n\n");
+    }
+    else if (mapped)
+    {
+        o.S("They are not concentrated at the screen edges, so edge gestures do not explain them.\n\n");
+    }
+
+    if (t.HidMatchOffsetPx().n && t.HidMatchOffsetPx().mean > 24.0)
+        o.P("Note: delivered contacts sat %.0f px from their HID-reported positions on average,\n"
+            "so the positions above may be imprecise.\n\n", t.HidMatchOffsetPx().mean);
+}
+
 } // namespace
 
 static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
@@ -366,13 +517,7 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
             ih.Percentile(0.50), ih.Percentile(0.90), ih.Percentile(0.99), ih.Percentile(0.999));
     }
     o.S("\n");
-    if (t.HidSeen() && t.TotalFrames())
-    {
-        double ratio = (double)t.HidReports() / (double)t.TotalFrames();
-        o.P("Raw HID reports read straight from the digitizer come to %.2f× the input\n"
-            "frame count. A ratio near 1.0 means the pointer stack is losing nothing.\n\n",
-            ratio);
-    }
+    MdDelivery(o, ctx);
 
     // ---- latency
     o.S("## Input delivery latency\n\n");
@@ -539,6 +684,7 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
     o.S("| File | Contents |\n| --- | --- |\n");
     o.S("| [`raw/samples.csv.gz`](raw/samples.csv.gz) | Every buffered sample: timestamps, interval, latency, coordinates, pressure — gzip |\n");
     o.S("| [`raw/rate_by_contacts.csv`](raw/rate_by_contacts.csv) | Report rate per simultaneous contact count |\n");
+    o.S("| [`raw/undelivered_touches.csv`](raw/undelivered_touches.csv) | Touches the panel reported that Windows did not deliver |\n");
     o.S("| [`raw/contacts.csv`](raw/contacts.csv) | Per-contact summary |\n");
     o.S("| [`raw/interval_histogram.csv`](raw/interval_histogram.csv) | Report-interval distribution |\n");
     o.S("| [`raw/latency_histogram.csv`](raw/latency_histogram.csv) | Delivery-latency distribution |\n");
@@ -703,6 +849,38 @@ static bool WriteJson(const std::wstring& path, const ExportContext& ctx)
     stat("processed_minus_raw_px", t.PredictPx(), false);
     o.S("  },\n");
 
+    o.S("  \"delivery\": {\n");
+    o.P("    \"hid_reports\": %llu, \"hid_frames\": %llu,\n",
+        (unsigned long long)t.HidReports(), (unsigned long long)t.HidFrames());
+    o.P("    \"hid_touch_reports\": %llu, \"hid_no_tip_reports\": %llu, \"hid_empty_reports\": %llu,\n",
+        (unsigned long long)t.HidTouchReports(), (unsigned long long)t.HidNoTipReports(),
+        (unsigned long long)t.HidEmptyReports());
+    o.P("    \"panel_contacts\": %llu, \"delivered\": %llu, \"undelivered\": %llu,\n",
+        (unsigned long long)t.HidContacts(), (unsigned long long)t.HidDelivered(),
+        (unsigned long long)t.HidUndelivered());
+    o.P("    \"edge_band_px\": %.0f,\n", kEdgeBandPx);
+    {
+        const WindowInfo& w = ctx.window;
+        o.P("    \"window\": {\"left\": %ld, \"top\": %ld, \"width\": %ld, \"height\": %ld, "
+            "\"fullscreen\": %s, \"edge_swipe_blocked\": %s},\n",
+            w.client.left, w.client.top, w.client.right - w.client.left, w.client.bottom - w.client.top,
+            w.fullscreen ? "true" : "false", w.edgeSwipeBlocked ? "true" : "false");
+    }
+    {
+        HidDescriptorInfo di;
+        if (ctx.hid && ctx.hid->LastDevice() && ctx.hid->Describe(ctx.hid->LastDevice(), di))
+            o.P("    \"hid_descriptor\": {\"contact_slots\": %u, \"contact_count\": %s, \"contact_id\": %s, "
+                "\"tip_switch\": %s, \"confidence\": %s, \"x_min\": %d, \"x_max\": %d, "
+                "\"y_min\": %d, \"y_max\": %d, \"report_id\": %u},\n",
+                di.fingerCollections, di.hasContactCount ? "true" : "false",
+                di.hasContactId ? "true" : "false", di.hasTipSwitch ? "true" : "false",
+                di.hasConfidence ? "true" : "false", di.xMin, di.xMax, di.yMin, di.yMax, di.reportId);
+    }
+    stat("match_offset_px", t.HidMatchOffsetPx());
+    stat("delivered_edge_distance_px", t.DeliveredEdgeDist());
+    stat("undelivered_edge_distance_px", t.UndeliveredEdgeDist(), false);
+    o.S("  },\n");
+
     o.P("  \"exported_sample_rows\": %llu,\n", (unsigned long long)t.RecordCount());
     o.P("  \"samples_dropped_from_ring\": %llu\n", (unsigned long long)t.RecordsDropped());
     o.S("}\n");
@@ -766,6 +944,27 @@ ExportResult ExportAll(const ExportContext& ctx, const std::wstring& baseDir)
                     tr.MaxGapMsAt(n), (unsigned long long)s.n);
                 if (one > 0) o.P("%.2f\n", tr.ModeHzAt(n) / one * 100.0);
                 else         o.S("\n");
+            }
+            res.files.push_back(p);
+        }
+    }
+
+    p = raw + L"\\undelivered_touches.csv";
+    {
+        Out o;
+        if (o.Open(p))
+        {
+            o.S("index,at_s,start_x,start_y,end_x,end_y,duration_ms,reports,"
+                "edge_distance_px,edge_swipe_blocked,position_mapped\n");
+            const std::vector<UndeliveredTouch>& und = ctx.tracker->Undelivered();
+            for (size_t i = 0; i < und.size(); ++i)
+            {
+                const UndeliveredTouch& u = und[i];
+                o.P("%zu,%.4f,%.1f,%.1f,%.1f,%.1f,%.2f,%u,", i + 1,
+                    QpcToSec(u.qpc - ctx.sessionStartQpc), u.x, u.y, u.lastX, u.lastY,
+                    u.durationMs, u.reports);
+                if (u.mapped) o.P("%.1f,", u.edgeDistPx); else o.S(",");
+                o.P("%d,%d\n", u.edgeSwipeBlocked ? 1 : 0, u.mapped ? 1 : 0);
             }
             res.files.push_back(p);
         }

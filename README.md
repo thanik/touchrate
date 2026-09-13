@@ -71,7 +71,7 @@ build\TouchRate.exe
 | `H` | Toggle coalesced-frame recovery |
 | `T` `G` `I` `P` | Toggle trails / grid / ink / sample dots |
 | `D` | Re-enumerate touch devices |
-| `F` | Borderless full screen |
+| `F` | Borderless full screen — required to test the screen edges |
 | `F1` | Help |
 | `Esc` | Quit |
 
@@ -129,12 +129,31 @@ Press one finger, then two, and so on up to ten, holding each for a few seconds
 so every row gets enough intervals — the `samples` column tells you which rows
 are well supported.
 
-### Raw HID cross-check
+### Touch delivery
 
-TouchRate also reads the digitizer through Raw Input, counting HID reports that
-never pass through the pointer stack. If this matches the input-frame count,
-nothing is being lost on the way up. If it is higher, the pointer stack is
-dropping reports.
+TouchRate reads the digitizer's own HID reports through Raw Input and decodes
+them — contact IDs, positions and the TipSwitch flag — independently of the
+Windows pointer stack. It then matches every contact the panel reported against
+the pointer contacts Windows actually delivered, by position and time.
+
+A touch the panel reported but Windows never delivered is marked on screen with
+a red cross, flagged live with a pulsing ring while the finger is still down,
+and counted as lost in the stats panel. The export lists each one with its
+position, duration and distance from the screen edge, and diagnoses the cause:
+
+- **Lost at the screen edges, outside full screen** — Windows reserves the edges
+  for swipe gestures and hands those touches to the shell instead of the window
+  under the finger.
+- **Lost with edge-swipe blocking in effect** — something else took them, most
+  often a topmost window such as the taskbar along that edge.
+- **Reports arrive but no contact is ever flagged as touching** — the panel
+  detected something and chose not to report it as a touch: firmware edge or
+  palm rejection.
+
+**Test the screen edges in full screen (`F`).** TouchRate blocks Windows edge
+swipes for its window, but Windows only honours that while the window is full
+screen; windowed, the edges will read as dead even on a perfect panel. Each
+export records whether blocking was in effect.
 
 ### Delivery latency
 
@@ -213,6 +232,7 @@ measurement is readable in the browser with no tooling.
 | `summary.json` | Every figure above, machine-readable |
 | `raw/samples.csv.gz` | Every buffered sample: device and host timestamps, interval, instantaneous Hz, latency, client/screen/raw/himetric coordinates, prediction delta, pressure, contact area. gzip — around 6x smaller, and read directly by `pandas.read_csv`, R, 7-Zip and `zcat` |
 | `raw/rate_by_contacts.csv` | Report rate for each simultaneous contact count, with percent of the single-contact baseline |
+| `raw/undelivered_touches.csv` | Every touch the panel reported that Windows did not deliver: position, duration, distance from the edge, whether edge-swipe blocking was in effect |
 | `raw/contacts.csv` | Per-contact summary: sample count, interval stats, path length, down latency |
 | `raw/interval_histogram.csv` | Report-interval distribution with Hz equivalents |
 | `raw/latency_histogram.csv` | Delivery-latency distribution |
@@ -238,6 +258,12 @@ In `raw/samples.csv.gz`, all contacts belonging to one hardware report share a
   add jitter to what it is measuring.
 - Raw Input is registered with `RIDEV_INPUTSINK`, so HID report counts include
   touches made while another window has focus.
+- Windows edge swipes are blocked for the window, which Windows only honours in
+  full screen. Outside full screen, touches that start at the screen edge go to
+  the shell and are reported as lost.
+- HID positions map from the digitizer's logical range onto its display. A
+  rotated display is not yet accounted for, so lost-touch positions may be
+  misplaced on one.
 - Touch feedback visuals are disabled for the window; the shell draws those on
   top and adds latency of its own.
 

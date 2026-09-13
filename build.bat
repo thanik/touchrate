@@ -61,7 +61,7 @@ if errorlevel 1 (
 :have_env
 if not exist build mkdir build
 
-set "SRC=src\main.cpp src\ui.cpp src\tracker.cpp src\device.cpp src\display.cpp src\render.cpp src\export.cpp src\gzip.cpp"
+set "SRC=src\main.cpp src\ui.cpp src\tracker.cpp src\device.cpp src\display.cpp src\render.cpp src\export.cpp src\gzip.cpp src\hidtouch.cpp"
 set "LIBS=user32.lib gdi32.lib shell32.lib shcore.lib d3d11.lib dxgi.lib d3dcompiler.lib hid.lib dwmapi.lib ole32.lib winmm.lib"
 
 set "CFLAGS=/nologo /std:c++17 /EHsc /W4 /permissive- /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /wd4100 /wd4127 /wd4324"

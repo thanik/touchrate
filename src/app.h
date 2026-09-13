@@ -30,6 +30,8 @@ struct App
     HWND        hwnd = nullptr;
     Renderer    rend;
     Tracker     tracker;
+    HidTouchDecoder hid;
+    bool        edgeSwipeApplied = false;   // the shell accepted the window property
     FrameStats  frame;
     MonitorInfo monitor;
     VBlankMeter vblank;
@@ -48,6 +50,10 @@ struct App
     // Saved placement for the borderless-fullscreen toggle.
     WINDOWPLACEMENT savedPlacement{};
     DWORD           savedStyle = 0;
+
+    // Edge swipes are always blocked, but the shell only honours that while the
+    // window is full screen.
+    bool EdgeSwipeBlocked() const { return edgeSwipeApplied && view.fullscreen; }
 
     void Notify(const std::string& s, Color c = Pal::good)
     {

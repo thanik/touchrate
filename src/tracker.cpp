@@ -46,6 +46,13 @@ void Tracker::ResetStats()
     m_totalSamples = m_totalFrames = m_historySamples = 0;
     m_messages = m_hidReports = m_downs = m_ups = m_lostContacts = 0;
     m_lastFrameQpc = 0;
+    m_hidTracks.clear();
+    m_undelivered.clear();
+    m_undeliveredMarkStart = 0;
+    m_undeliveredDropped = 0;
+    m_hidFrames = m_hidTouchReports = m_hidNoTipReports = m_hidEmptyReports = 0;
+    m_hidContacts = m_hidDelivered = m_hidUndelivered = 0;
+    m_hidMatchOffset.Reset(); m_deliveredEdge.Reset(); m_undeliveredEdge.Reset();
     m_maxSimultaneous = m_contactsNow;
     for (int i = 0; i <= kMaxSlots; ++i) m_simSeen[i] = false;
     if (m_contactsNow >= 1 && m_contactsNow <= kMaxSlots) m_simSeen[m_contactsNow] = true;
@@ -59,6 +66,7 @@ void Tracker::ClearInk()
 {
     m_inkHead = m_inkCount = 0;
     for (Contact& c : m_slots) c.ClearTrail();
+    m_undeliveredMarkStart = m_undelivered.size();   // markers only; counts stay
 }
 
 // ----------------------------------------------------------------- slot logic
@@ -136,11 +144,156 @@ int Tracker::HandlePointerMessage(UINT msg, WPARAM wParam, int64_t hostQpc)
     return accepted;
 }
 
-void Tracker::HandleRawHidReports(uint32_t reports, int64_t hostQpc)
+// ------------------------------------------------------------ HID delivery
+
+namespace {
+
+constexpr double kMatchRadiusPx = 96.0;   // a finger, with room for motion between reports
+constexpr double kLiftTimeoutMs = 120.0;  // no touching report for this long means lifted
+constexpr double kSettleMs      = 250.0;  // wait this long after lift before judging delivery
+constexpr double kMatchGraceMs  = 150.0;  // pointer input may trail the raw report slightly
+constexpr size_t kMaxTracks     = 64;
+constexpr size_t kMaxUndelivered = 4096;
+
+double EdgeDistance(const RECT& r, float x, float y)
 {
-    if (!reports) return;
-    m_hidReports += reports;
-    m_hidRate.Tick(hostQpc, (double)reports);
+    double d = (double)x - r.left;
+    d = std::min(d, (double)(r.right - 1) - x);
+    d = std::min(d, (double)y - r.top);
+    d = std::min(d, (double)(r.bottom - 1) - y);
+    return std::max(0.0, d);
+}
+
+} // namespace
+
+void Tracker::HandleHidReport(const std::vector<HidContactSample>& contacts,
+                              const HidReportInfo& info, int64_t now)
+{
+    ++m_hidReports;
+    m_hidRate.Tick(now);
+    if (info.frameStart) ++m_hidFrames;
+    switch (info.kind)
+    {
+    case HRK_TOUCH: ++m_hidTouchReports; break;
+    case HRK_NOTIP: ++m_hidNoTipReports; break;
+    default:        ++m_hidEmptyReports; break;
+    }
+    if (info.haveDisplay) { m_hidDisplay = info.display; m_hidHaveDisplay = true; }
+
+    for (const HidContactSample& c : contacts)
+    {
+        HidTrack* t = nullptr;
+        for (HidTrack& tr : m_hidTracks)
+            if (!tr.ended && tr.id == c.id) { t = &tr; break; }
+
+        if (!c.tip)
+        {
+            if (t) { t->ended = true; t->endQpc = now; }
+            continue;
+        }
+
+        if (!t)
+        {
+            if (m_hidTracks.size() >= kMaxTracks)
+            {
+                // Something is churning contact ids; settle the oldest now.
+                FinalizeHidTrack(m_hidTracks.front());
+                m_hidTracks.erase(m_hidTracks.begin());
+            }
+            m_hidTracks.push_back(HidTrack{});
+            t = &m_hidTracks.back();
+            t->id = c.id;
+            t->mapped = c.mapped;
+            t->firstQpc = now;
+            t->firstX = c.sx;
+            t->firstY = c.sy;
+            t->edgeSwipeBlocked = m_edgeSwipeBlocked;
+        }
+
+        t->sx = c.sx;
+        t->sy = c.sy;
+        t->lastQpc = now;
+        ++t->reports;
+        if (c.mapped && info.haveDisplay)
+            t->edgeDistPx = std::min(t->edgeDistPx, EdgeDistance(info.display, c.sx, c.sy));
+
+        if (!t->delivered) MatchHidToPointers(*t);
+    }
+}
+
+// Matching runs from both sides because raw input and pointer messages for the
+// same report arrive in either order; whichever lands second makes the match.
+void Tracker::MatchHidToPointers(HidTrack& t)
+{
+    for (const Contact& pc : m_slots)
+    {
+        if (!pc.active) continue;
+        if (!t.mapped) { t.delivered = true; return; }   // no mapping: timing only
+        const double dx = (double)pc.rawX - t.sx, dy = (double)pc.rawY - t.sy;
+        const double d = std::sqrt(dx * dx + dy * dy);
+        if (d <= kMatchRadiusPx)
+        {
+            t.delivered = true;
+            m_hidMatchOffset.Add(d);
+            return;
+        }
+    }
+}
+
+void Tracker::MatchPointerToHid(float screenX, float screenY, int64_t hostQpc)
+{
+    const int64_t grace = MsToQpc(kMatchGraceMs);
+    HidTrack* best = nullptr;
+    HidTrack* unmapped = nullptr;
+    double bestD = 1e18;
+
+    for (HidTrack& t : m_hidTracks)
+    {
+        // Bound by the last report, not by now: a contact that stopped
+        // reporting but has not been swept yet must not absorb later input.
+        const int64_t end = t.ended ? t.endQpc : t.lastQpc;
+        if (hostQpc < t.firstQpc - grace || hostQpc > end + grace) continue;
+        if (!t.mapped) { unmapped = &t; continue; }
+        const double dx = (double)t.sx - screenX, dy = (double)t.sy - screenY;
+        const double d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = &t; }
+    }
+
+    if (best && bestD <= kMatchRadiusPx * kMatchRadiusPx)
+    {
+        if (!best->delivered) m_hidMatchOffset.Add(std::sqrt(bestD));
+        best->delivered = true;
+    }
+    else if (!best && unmapped)
+    {
+        unmapped->delivered = true;
+    }
+}
+
+void Tracker::FinalizeHidTrack(const HidTrack& t)
+{
+    ++m_hidContacts;
+    if (t.delivered)
+    {
+        ++m_hidDelivered;
+        if (t.mapped && t.edgeDistPx < 1e8) m_deliveredEdge.Add(t.edgeDistPx);
+        return;
+    }
+
+    ++m_hidUndelivered;
+    if (t.mapped && t.edgeDistPx < 1e8) m_undeliveredEdge.Add(t.edgeDistPx);
+    if (m_undelivered.size() >= kMaxUndelivered) { ++m_undeliveredDropped; return; }
+
+    UndeliveredTouch u;
+    u.qpc = t.firstQpc;
+    u.x = t.firstX; u.y = t.firstY;
+    u.lastX = t.sx; u.lastY = t.sy;
+    u.durationMs = QpcToMs((t.ended ? t.endQpc : t.lastQpc) - t.firstQpc);
+    u.reports = t.reports;
+    u.edgeDistPx = t.edgeDistPx < 1e8 ? t.edgeDistPx : 0.0;
+    u.mapped = t.mapped;
+    u.edgeSwipeBlocked = t.edgeSwipeBlocked;
+    m_undelivered.push_back(u);
 }
 
 int Tracker::IngestFrames(uint32_t pointerId, int64_t hostQpc, bool isUp)
@@ -436,6 +589,10 @@ void Tracker::AcceptSample(const POINTER_TOUCH_INFO& ti, int64_t hostQpc,
     m_lastSourceDevice = pi.sourceDevice;
     m_lastPointerType = pi.pointerType;
 
+    // Credit the panel contact this pointer sample corresponds to.
+    if (!m_hidTracks.empty())
+        MatchPointerToHid((float)pi.ptPixelLocationRaw.x, (float)pi.ptPixelLocationRaw.y, hostQpc);
+
     if (kind == SK_UP) ReleaseSlot(slot, devQpc);
 }
 
@@ -469,6 +626,23 @@ void Tracker::Update(int64_t now)
         m_contactsNow = live;
     }
     if (m_contactsNow > 0 && m_touchingSince == 0) m_touchingSince = now;
+
+    // Panel contacts: end the ones that stopped reporting, then judge delivery
+    // once enough time has passed for any trailing pointer input to arrive.
+    const int64_t liftTimeout = MsToQpc(kLiftTimeoutMs);
+    const int64_t settle = MsToQpc(kSettleMs);
+    for (HidTrack& t : m_hidTracks)
+        if (!t.ended && now - t.lastQpc > liftTimeout) { t.ended = true; t.endQpc = t.lastQpc; }
+
+    for (size_t i = 0; i < m_hidTracks.size();)
+    {
+        if (m_hidTracks[i].ended && now - m_hidTracks[i].endQpc > settle)
+        {
+            FinalizeHidTrack(m_hidTracks[i]);
+            m_hidTracks.erase(m_hidTracks.begin() + (ptrdiff_t)i);
+        }
+        else ++i;
+    }
 }
 
 double Tracker::ModeHz() const
