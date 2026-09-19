@@ -17,7 +17,8 @@ A native Windows tool for evaluating a touch screen for rhythm games and other
 latency-sensitive input. It measures the digitizer's report rate and timing
 jitter, verifies 10-finger tracking, identifies the touch hardware by VID/PID,
 measures the monitor's real refresh rate and the app's own frame rate, and
-exports everything for offline analysis.
+exports everything for offline analysis. A laptop's precision touch pad is
+measured too, kept apart from its touch screen.
 
 Direct3D 11 with a flip-model swap chain, immediate present and tearing allowed,
 so what you see on the panel is as close to the input as the display path
@@ -72,8 +73,10 @@ build\TouchRate.exe
 | `T` `G` `I` `P` | Toggle trails / grid / ink / sample dots |
 | `D` | Re-enumerate touch devices |
 | `F` | Borderless full screen — required to test the screen edges |
+| `Tab` | Grid scan: switch to the dead zone test screen and back |
+| `+` `-` | Grid scan: finer / coarser cells (`C` clears the grid) |
 | `F1` | Help |
-| `Esc` | Quit |
+| `Esc` | Quit, or leave the grid scan |
 
 ## What it measures
 
@@ -159,6 +162,11 @@ position, duration and distance from the screen edge, and diagnoses the cause:
 - **On another window while full screen** — something sits above TouchRate,
   most often the taskbar or an always-on-top overlay. Those touches went to that
   window, so they are counted with the other-window touches, not as lost.
+- **Lost in groups of three or more fingers** — Windows 11 takes a three- or
+  four-finger touch as a system gesture (switching apps, Task View, showing the
+  desktop) and passes none of it to the window. Turn off **Settings > Bluetooth
+  & devices > Touch > Three- and four-finger touch gestures** to measure
+  multi-finger touches.
 - **Reports arrive but no contact is ever flagged as touching** — the panel
   detected something and chose not to report it as a touch: firmware edge or
   palm rejection.
@@ -180,14 +188,43 @@ Note also that a device whose driver stamps reports at OS ingestion rather than
 at hardware sampling will report an optimistically low figure here. Compare
 against the raw HID count and the interval distribution before trusting it.
 
+### Grid scan (dead zone test)
+
+`Tab` switches to a separate screen: a full-screen grid with only a translucent
+status bar along the bottom. Drag slowly over the whole screen, edges and
+corners included. Every cell a touch lands in turns green, brightening a little
+with use. An untouched cell next to a touched one is tinted red — a hole the
+finger swept around, or a dead strip along an edge — so once the screen is
+painted, whatever is still red is a dead zone.
+
+Only reported sample positions mark a cell. A swipe is deliberately not filled
+in between its samples, since that would paint straight over a dead zone the
+finger crossed. The flip side is that a fast swipe on a slow panel leaves gaps
+of its own; going back over a red cell slowly tells a real dead zone from a
+missed spot.
+
+Entering the grid scan goes full screen on the monitor the touch screen is
+mapped to, since Windows takes edge touches outside full screen and a grid on
+any other monitor could never be touched. `+` and `-` change the cell size
+without losing the scan. Cells are counted across the long side of the screen
+(40 by default, roughly fingertip-sized on a 15-16" panel), so the same setting
+gives the same physical cells at any resolution. Touches the panel reported but
+Windows did not deliver still appear as red crosses, so a cell can be told
+apart as dead in the panel or taken by Windows.
+
+When a scan has been run, the export adds a section with coverage, untouched
+cells per edge, and a character map of the screen, plus
+`raw/grid_coverage.csv`.
+
 ### 10-finger test
 
 Tracks up to 20 concurrent contacts with stable slot assignment and colour.
 The pips in the multi-touch panel light up as you reach each simultaneous
 contact count, so pressing all ten fingers fills the row. The panel compares
-what you reached against the **HID descriptor's** contact count, which is the
-hardware truth — Windows often advertises a larger figure (`SM_MAXIMUMTOUCHES`)
-than the panel can actually report at once.
+what you reached against what the device itself declares — its own maximum,
+or the contact slots in its HID reports, whichever is larger — rather than
+the system-wide `SM_MAXIMUMTOUCHES`. The two device figures differ on panels
+in hybrid mode, which split ten fingers across two five-slot reports.
 
 A watchdog releases any contact that stops reporting for 2 s without an up
 message. If that ever triggers, the report says so — it means the input stream
@@ -199,6 +236,43 @@ The distance between the processed position Windows reports
 (`ptPixelLocation`) and the unprocessed one (`ptPixelLocationRaw`). A non-zero
 mean means the OS is smoothing or predicting your input. TouchRate draws and
 records the raw position.
+
+### Touch pad
+
+A laptop's precision touch pad is measured as well, entirely apart from the
+touch screen. Windows never passes a touch pad to an application as touch input
+— it turns it into cursor movement and gestures — so TouchRate reads the pad's
+own HID reports through Raw Input and decodes them itself: contacts, positions,
+the click button, and the Confidence flag the pad uses to reject a palm.
+
+- **Separate figures.** The pad gets its own report rate, jitter, worst gap,
+  rate by contact count, contact table and export section, so a laptop with
+  both inputs never mixes the two. Pad reports never enter the touch screen's
+  delivery check either.
+- **The view follows your fingers.** The analyzer shows whichever input a
+  finger last went down on, and the stats title says which. A laptop with a
+  touch pad and no touch screen starts on the pad.
+- **Drawn to scale.** The pad's surface is drawn in the open canvas at its real
+  size ratio, from the physical size in its descriptor, with each contact where
+  it is on the pad and a dot for every report along its trail.
+- **Timed on the pad's own clock.** Precision touch pads stamp every report
+  with a scan time in 100 µs units, so intervals come from the pad itself
+  rather than from when Windows passed the report on. TouchRate checks that
+  clock against the host's over the first two seconds of touching and falls
+  back to arrival times if the two disagree. The difference between them is
+  reported as the jitter added between the pad and the app.
+- **Clocks that count in whole milliseconds.** Many pads only advance that
+  field in 1 ms steps, so a steady 7.44 ms period reads as a mix of 7 and 8 ms
+  intervals. TouchRate detects the step and takes the modal rate from the
+  centre of the interval peak rather than its tallest step; jitter and worst
+  gap then carry up to one step of rounding, which the report states.
+- **Bunched delivery.** Reports that reach the app together with the next one,
+  although the pad produced them a full interval apart, are counted, with the
+  longest wait between arrivals. Anything reading the pad gets those two
+  reports at once.
+- **Palms and split frames.** Contacts the pad flags as unintended are counted
+  but not measured. Pads that split a frame with many fingers across several
+  reports (hybrid mode) are reassembled into whole frames first.
 
 ### Display and frame rate
 
@@ -232,7 +306,13 @@ exports/touchrate_20260912_125034/
     ├── contacts.csv
     ├── interval_histogram.csv
     ├── latency_histogram.csv
-    └── frametime_histogram.csv
+    ├── frametime_histogram.csv
+    ├── undelivered_touches.csv
+    ├── grid_coverage.csv                  only when a grid scan was run
+    ├── touchpad_samples.csv.gz            touchpad_* only when a touch pad was used
+    ├── touchpad_rate_by_contacts.csv
+    ├── touchpad_contacts.csv
+    └── touchpad_interval_histogram.csv
 ```
 
 The summary is Markdown and named `README.md` so that GitHub, GitLab and
@@ -246,13 +326,16 @@ measurement is readable in the browser with no tooling.
 | `raw/samples.csv.gz` | Every buffered sample: device and host timestamps, interval, instantaneous Hz, latency, client/screen/raw/himetric coordinates, prediction delta, pressure, contact area. gzip — around 6x smaller, and read directly by `pandas.read_csv`, R, 7-Zip and `zcat` |
 | `raw/rate_by_contacts.csv` | Report rate for each simultaneous contact count, with percent of the single-contact baseline |
 | `raw/undelivered_touches.csv` | Every touch that started in TouchRate's window and that Windows did not deliver: position, duration, distance from the edge, whether edge-swipe blocking was in effect |
+| `raw/grid_coverage.csv` | Grid scan only: every cell's position relative to the monitor and how many samples landed in it |
 | `raw/contacts.csv` | Per-contact summary: sample count, interval stats, path length, down latency |
 | `raw/interval_histogram.csv` | Report-interval distribution with Hz equivalents |
 | `raw/latency_histogram.csv` | Delivery-latency distribution |
 | `raw/frametime_histogram.csv` | Render frame-time distribution |
+| `raw/touchpad_*` | Touch pad only: every sample in pad units, timed on both the pad's clock and the host's; rate by contact count; per-contact summary; interval distribution |
 
 `[L]` streams samples continuously to `exports/live/` instead, for sessions
-longer than the in-memory ring holds.
+longer than the in-memory ring holds. A touch pad streams to its own
+`_touchpad_live.csv` beside it.
 
 In `raw/samples.csv.gz`, all contacts belonging to one hardware report share a
 `frame_id` and `device_qpc` — group by those to reconstruct frames. The
@@ -269,8 +352,10 @@ In `raw/samples.csv.gz`, all contacts belonging to one hardware report share a
   rather not.
 - The process runs at high priority so that the tool's own scheduling does not
   add jitter to what it is measuring.
-- Raw Input is registered with `RIDEV_INPUTSINK`, so HID report counts include
-  touches made while another window has focus.
+- Raw Input is received on a dedicated high-priority thread that stamps each
+  report as it arrives, so arrival times do not wait on the render loop. It is
+  registered with `RIDEV_INPUTSINK`, so HID report counts and touch pad
+  measurements include input made while another window has focus.
 - Windows edge swipes are blocked for the window, which Windows only honours in
   full screen. Outside full screen, touches that start at the screen edge where
   TouchRate's window reaches it go to the shell and are reported as lost.

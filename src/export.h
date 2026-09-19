@@ -4,6 +4,8 @@
 #include "tracker.h"
 #include "device.h"
 #include "display.h"
+#include "gridscan.h"
+#include "touchpad.h"
 
 struct PresentInfo
 {
@@ -34,6 +36,10 @@ struct ExportContext
     const MonitorInfo*              monitor = nullptr;
     const VBlankMeter*              vblank = nullptr;
     const FrameStats*               frame = nullptr;
+    const GridScan*                 grid = nullptr;   // reported only if a scan was run
+    const Tracker*                  pad = nullptr;    // the touch pad, reported only if it was used
+    const TouchPadInput*            padIn = nullptr;
+    int                             padDevice = -1;
     PresentInfo                     present;
     int64_t                         sessionStartQpc = 0;
     int64_t                         nowQpc = 0;
@@ -50,6 +56,7 @@ struct ExportResult
     uint64_t                  sampleRows = 0;
     uint64_t                  sampleBytesRaw = 0;   // sample CSV before compression
     uint64_t                  sampleBytesGz = 0;    // and after
+    uint64_t                  padSampleRows = 0;
 };
 
 ExportResult ExportAll(const ExportContext& ctx, const std::wstring& baseDir);

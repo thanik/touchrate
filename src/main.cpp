@@ -8,7 +8,8 @@
 #include <memory>
 
 static App* g_app = nullptr;
-static std::vector<uint8_t> g_rawBuf;
+static std::vector<RawReport> g_reports;
+static std::vector<uint8_t> g_reportBytes;
 static std::vector<HidContactSample> g_hidContacts;
 
 // ------------------------------------------------------------------- console
@@ -82,7 +83,7 @@ static void PrintDeviceList()
         Out("    type         : %s (usage page 0x%02X, usage 0x%02X)\n",
             WideToUtf8(d.typeName).c_str(), d.usagePage, d.usage);
         if (d.maxContacts)    Out("    max contacts : %u (OS)\n", d.maxContacts);
-        if (d.hidMaxContacts) Out("    max contacts : %u (HID descriptor)\n", d.hidMaxContacts);
+        if (d.hidMaxContacts) Out("    contact slots: %u per HID report\n", d.hidMaxContacts);
         if (d.inputReportBytes) Out("    input report : %u bytes\n", d.inputReportBytes);
         if (d.haveRects)
             Out("    geometry     : %ld x %ld units -> %ld x %ld px  (%.2f steps/px)\n",
@@ -137,25 +138,6 @@ static bool BlockEdgeSwipes(HWND hwnd)
     return SUCCEEDED(hr);
 }
 
-static int RegisterDigitizerRawInput(HWND hwnd)
-{
-    // Reading the digitizer through Raw Input gives a report count that never
-    // passes through the pointer stack, so it can confirm the rate measured
-    // from pointer frames.
-    static const USHORT usages[] = { 0x04, 0x05, 0x01, 0x02 };
-    int ok = 0;
-    for (USHORT u : usages)
-    {
-        RAWINPUTDEVICE rid{};
-        rid.usUsagePage = 0x0D;
-        rid.usUsage = u;
-        rid.dwFlags = RIDEV_INPUTSINK;
-        rid.hwndTarget = hwnd;
-        if (RegisterRawInputDevices(&rid, 1, sizeof rid)) ++ok;
-    }
-    return ok;
-}
-
 static void ToggleFullscreen(App& app)
 {
     if (!app.view.fullscreen)
@@ -167,21 +149,69 @@ static void ToggleFullscreen(App& app)
         MONITORINFO mi{};
         mi.cbSize = sizeof mi;
         GetMonitorInfoW(MonitorFromWindow(app.hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+        // Set the flag before moving: a move that changes DPI sends
+        // WM_DPICHANGED, whose handler sizes the window by it.
+        app.view.fullscreen = true;
         SetWindowLongW(app.hwnd, GWL_STYLE, (LONG)((app.savedStyle & ~WS_OVERLAPPEDWINDOW) | WS_POPUP));
         SetWindowPos(app.hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
                      mi.rcMonitor.right - mi.rcMonitor.left,
                      mi.rcMonitor.bottom - mi.rcMonitor.top,
                      SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
-        app.view.fullscreen = true;
     }
     else
     {
+        // Cleared first for the same reason: restoring onto a monitor with a
+        // different DPI must not be re-fitted as full screen.
+        app.view.fullscreen = false;
         SetWindowLongW(app.hwnd, GWL_STYLE, (LONG)app.savedStyle);
+        // The saved placement is already in the target monitor's pixels. If
+        // the move crosses a DPI boundary, WM_DPICHANGED must not scale it again.
+        app.restoringPlacement = true;
         SetWindowPlacement(app.hwnd, &app.savedPlacement);
+        app.restoringPlacement = false;
         SetWindowPos(app.hwnd, nullptr, 0, 0, 0, 0,
                      SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER);
-        app.view.fullscreen = false;
     }
+}
+
+// Window size for the layout's minimum client area, at the window's DPI,
+// limited to the monitor's work area so the window can always fit on it.
+static SIZE MinWindowSize(const App& app)
+{
+    int cw = 0, ch = 0;
+    MinClientSize(app.rend, cw, ch);
+
+    RECT rc{ 0, 0, cw, ch };
+    const DWORD style = (DWORD)GetWindowLongW(app.hwnd, GWL_STYLE);
+    const DWORD exStyle = (DWORD)GetWindowLongW(app.hwnd, GWL_EXSTYLE);
+    AdjustWindowRectExForDpi(&rc, style, FALSE, exStyle, GetDpiForWindow(app.hwnd));
+
+    MONITORINFO mi{};
+    mi.cbSize = sizeof mi;
+    GetMonitorInfoW(MonitorFromWindow(app.hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+    SIZE out;
+    out.cx = std::min<LONG>(rc.right - rc.left, mi.rcWork.right - mi.rcWork.left);
+    out.cy = std::min<LONG>(rc.bottom - rc.top, mi.rcWork.bottom - mi.rcWork.top);
+    return out;
+}
+
+// Grow a window that is below the minimum, keeping it inside the work area.
+static void EnforceMinimumSize(App& app)
+{
+    if (app.view.fullscreen) return;
+    const SIZE mn = MinWindowSize(app);
+    RECT wr{};
+    GetWindowRect(app.hwnd, &wr);
+    const LONG w = std::max<LONG>(wr.right - wr.left, mn.cx);
+    const LONG h = std::max<LONG>(wr.bottom - wr.top, mn.cy);
+    if (w == wr.right - wr.left && h == wr.bottom - wr.top) return;
+
+    MONITORINFO mi{};
+    mi.cbSize = sizeof mi;
+    GetMonitorInfoW(MonitorFromWindow(app.hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+    const LONG x = std::max(mi.rcWork.left, std::min(wr.left, mi.rcWork.right - w));
+    const LONG y = std::max(mi.rcWork.top, std::min(wr.top, mi.rcWork.bottom - h));
+    SetWindowPos(app.hwnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 static void RefreshMonitor(App& app, bool restartVblank)
@@ -200,6 +230,7 @@ static void RefreshDevices(App& app, bool notify)
 {
     app.devices = EnumerateTouchDevices();
     app.activeDevice = FindDeviceByHandle(app.devices, app.tracker.LastSourceDevice());
+    app.padDevice = FindDeviceByHandle(app.devices, app.padIn.Device());
     if (notify)
     {
         char b[128];
@@ -207,6 +238,65 @@ static void RefreshDevices(App& app, bool notify)
                  app.devices.size(), app.devices.size() == 1 ? "" : "s");
         app.Notify(b, app.devices.empty() ? Pal::warn : Pal::good);
     }
+}
+
+// ------------------------------------------------------------ raw input
+
+// Decode what the raw input thread received and route each report by source:
+// a touch screen's go to its delivery check, a touch pad's to its own
+// measurement. Pad reports never reach the touch screen's figures.
+static void ProcessRawInput(App& app)
+{
+    app.rawPump.Drain(g_reports, g_reportBytes);
+    for (const RawReport& r : g_reports)
+    {
+        g_hidContacts.clear();
+        HidReportInfo info;
+        if (!app.hid.Decode(r.device, g_reportBytes.data() + r.offset, r.len, g_hidContacts, info))
+            continue;
+        if (info.pad)
+        {
+            HidDescriptorInfo desc;
+            app.hid.Describe(r.device, desc);
+            app.padIn.OnReport(r.device, desc, g_hidContacts, info, r.qpc, r.batched);
+        }
+        else
+        {
+            app.tracker.HandleHidReport(g_hidContacts, info, r.qpc);
+        }
+    }
+}
+
+static void SetSource(App& app, Source s)
+{
+    if (s == app.source) return;
+    app.source = s;
+    if (!app.gridMode)
+        app.Notify(s == Source::Pad ? "Showing the touch pad - touch the screen to switch back"
+                                    : "Showing the touch screen", Pal::textDim);
+}
+
+// The analyzer shows whichever input a finger last went down on.
+static void FollowSource(App& app)
+{
+    const uint64_t sd = app.tracker.Downs(), pd = app.pad.Downs();
+    const bool screenNew = sd > app.screenDownsSeen, padNew = pd > app.padDownsSeen;
+    app.screenDownsSeen = sd;
+    app.padDownsSeen = pd;
+    if (screenNew) SetSource(app, Source::Screen);
+    else if (padNew) SetSource(app, Source::Pad);
+}
+
+// With a touch pad and no touch screen - a laptop without one - start on the pad.
+static Source DefaultSource(const App& app)
+{
+    bool screen = false, pad = false;
+    for (const TouchDevice& d : app.devices)
+    {
+        if (d.usage == 0x05) pad = true;
+        else if ((d.usage == 0x04 || d.maxContacts > 1) && (d.vid || d.pid)) screen = true;
+    }
+    return pad && !screen ? Source::Pad : Source::Screen;
 }
 
 // -------------------------------------------------------------------- actions
@@ -231,6 +321,10 @@ static void DoExport(App& app)
     ctx.monitor = &app.monitor;
     ctx.vblank = &app.vblank;
     ctx.frame = &app.frame;
+    ctx.grid = &app.grid;
+    ctx.pad = &app.pad;
+    ctx.padIn = &app.padIn;
+    ctx.padDevice = app.padDevice;
     ctx.present = app.Present();
     ctx.sessionStartQpc = app.startQpc;
     ctx.nowQpc = QpcNow();
@@ -241,8 +335,11 @@ static void DoExport(App& app)
         app.lastExportDir = res.dir;
         char b[512];
         double ratio = res.sampleBytesGz ? (double)res.sampleBytesRaw / (double)res.sampleBytesGz : 0.0;
-        snprintf(b, sizeof b, "Exported to %s\\  (%llu samples, %.1f MB -> %.1f MB gzip, %.1fx)",
-                 WideToUtf8(res.stem).c_str(), (unsigned long long)res.sampleRows,
+        char padNote[64] = "";
+        if (res.padSampleRows)
+            snprintf(padNote, sizeof padNote, " + %llu touch pad samples", (unsigned long long)res.padSampleRows);
+        snprintf(b, sizeof b, "Exported to %s\\  (%llu samples%s, %.1f MB -> %.1f MB gzip, %.1fx)",
+                 WideToUtf8(res.stem).c_str(), (unsigned long long)res.sampleRows, padNote,
                  res.sampleBytesRaw / 1048576.0, res.sampleBytesGz / 1048576.0, ratio);
         app.Notify(b, Pal::good);
     }
@@ -260,8 +357,16 @@ static void ToggleLiveLog(App& app)
         std::string p = WideToUtf8(app.tracker.LiveLogPath());
         app.tracker.StopLiveLog();
         char b[512];
-        snprintf(b, sizeof b, "Live log stopped: %llu rows in %s",
-                 (unsigned long long)rows, p.c_str());
+        if (app.pad.LiveLogging())
+        {
+            const uint64_t padRows = app.pad.LiveLogRows();
+            app.pad.StopLiveLog();
+            snprintf(b, sizeof b, "Live log stopped: %llu rows in %s, %llu touch pad rows beside it",
+                     (unsigned long long)rows, p.c_str(), (unsigned long long)padRows);
+        }
+        else
+            snprintf(b, sizeof b, "Live log stopped: %llu rows in %s",
+                     (unsigned long long)rows, p.c_str());
         app.Notify(b, Pal::good);
         return;
     }
@@ -269,11 +374,17 @@ static void ToggleLiveLog(App& app)
     // than inside one - a run folder is only written when [S] is pressed.
     std::wstring dir = (app.exportDir.empty() ? DefaultExportDir() : app.exportDir) + L"\\live";
     if (!EnsureDirectory(dir)) { app.Notify("Could not create export directory", Pal::bad); return; }
-    std::wstring path = dir + L"\\touchrate_" + TimeStampString() + L"_live.csv";
+    const std::wstring stamp = TimeStampString();
+    std::wstring path = dir + L"\\touchrate_" + stamp + L"_live.csv";
     if (app.tracker.StartLiveLog(path))
     {
         app.lastExportDir = dir;
-        app.Notify("Live log started: " + WideToUtf8(path), Pal::good);
+        // A touch pad gets a file of its own: its samples are in pad units.
+        bool pad = app.padIn.Seen();
+        for (const TouchDevice& d : app.devices) if (d.usage == 0x05) pad = true;
+        if (pad) app.pad.StartLiveLog(dir + L"\\touchrate_" + stamp + L"_touchpad_live.csv");
+        app.Notify("Live log started: " + WideToUtf8(path) +
+                   (app.pad.LiveLogging() ? "  (+ _touchpad_live.csv)" : ""), Pal::good);
     }
     else app.Notify("Could not open the live log file", Pal::bad);
 }
@@ -288,10 +399,148 @@ static void OpenExportFolder(App& app)
     app.Notify("Opened " + WideToUtf8(dir), Pal::textDim);
 }
 
-static void OnKey(App& app, WPARAM key)
+// ---------------------------------------------------------------- grid scan
+
+// The monitor the touch screen under test is mapped to. On any other screen no
+// touch can reach the grid and every cell would read as dead.
+static HMONITOR TouchMonitor(const App& app)
+{
+    auto usable = [](const TouchDevice& d) {
+        return d.isPointerDevice && d.monitor && (d.usage == 0x04 || d.maxContacts > 1);
+    };
+    if (app.activeDevice >= 0 && (size_t)app.activeDevice < app.devices.size() &&
+        usable(app.devices[(size_t)app.activeDevice]))
+        return app.devices[(size_t)app.activeDevice].monitor;
+    // Prefer real hardware over the virtual digitizer Windows may expose.
+    for (const TouchDevice& d : app.devices)
+        if (usable(d) && (d.vid || d.pid)) return d.monitor;
+    for (const TouchDevice& d : app.devices)
+        if (usable(d)) return d.monitor;
+    return nullptr;
+}
+
+static void SetGridMode(App& app, bool on)
+{
+    if (on == app.gridMode) return;
+    if (on)
+    {
+        // Windows only stops taking edge touches in full screen; windowed, the
+        // outer cells would read as dead on a perfect panel.
+        app.gridWasFullscreen = app.view.fullscreen;
+        if (!app.view.fullscreen) ToggleFullscreen(app);
+
+        HMONITOR target = TouchMonitor(app);
+        if (target && target != MonitorFromWindow(app.hwnd, MONITOR_DEFAULTTONEAREST))
+        {
+            MONITORINFO mi{};
+            mi.cbSize = sizeof mi;
+            if (GetMonitorInfoW(target, &mi))
+                SetWindowPos(app.hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+                             mi.rcMonitor.right - mi.rcMonitor.left,
+                             mi.rcMonitor.bottom - mi.rcMonitor.top,
+                             SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+        }
+        RefreshMonitor(app, true);
+        app.view.showHelp = false;
+        app.gridMode = true;
+        app.gridResync = true;
+        app.Notify("Grid scan - drag slowly over the whole screen; cells that stay dark are dead zones",
+                   Pal::good);
+    }
+    else
+    {
+        app.gridMode = false;
+        if (!app.gridWasFullscreen && app.view.fullscreen) ToggleFullscreen(app);
+        RefreshMonitor(app, true);
+        app.Notify("Analyzer", Pal::textDim);
+    }
+}
+
+// Bin the delivered samples that arrived since the last frame.
+static void UpdateGridScan(App& app)
+{
+    RECT area = app.monitor.rect;
+    if (area.right <= area.left || area.bottom <= area.top)
+    {
+        RECT rc{};
+        GetClientRect(app.hwnd, &rc);
+        POINT o{ 0, 0 };
+        ClientToScreen(app.hwnd, &o);
+        area = RECT{ o.x, o.y, o.x + rc.right, o.y + rc.bottom };
+    }
+    app.grid.SetArea(area);
+
+    const Tracker& t = app.tracker;
+    const uint64_t total = t.InkTotal();
+
+    // Samples taken while the window was switching to full screen still carry
+    // the old client origin; start from the first settled frame instead.
+    if (app.gridResync) { app.gridInk = total; app.gridResync = false; return; }
+
+    uint64_t fresh = total - app.gridInk;
+    if (fresh > (uint64_t)t.InkCount()) fresh = (uint64_t)t.InkCount();
+    const std::vector<InkPt>& ink = t.Ink();
+    const size_t cap = ink.size();
+    if (fresh && cap)
+    {
+        const POINT o = t.ClientOrigin();
+        const size_t start = (t.InkHead() + cap - (size_t)fresh) % cap;
+        for (size_t i = 0; i < (size_t)fresh; ++i)
+        {
+            const InkPt& p = ink[(start + i) % cap];
+            app.grid.Add((int)std::floor(p.x) + o.x, (int)std::floor(p.y) + o.y);
+        }
+    }
+    app.gridInk = total;
+}
+
+// Keys on the grid screen. Returns false to fall through to the shared ones.
+static bool OnGridKey(App& app, WPARAM key)
 {
     switch (key)
     {
+    case VK_ESCAPE:
+        if (app.view.showHelp) app.view.showHelp = false;
+        else SetGridMode(app, false);
+        return true;
+    case VK_TAB:
+        SetGridMode(app, false);
+        return true;
+    case 'C': case 'R':
+        app.grid.Clear();
+        app.Notify("Grid cleared", Pal::textDim);
+        return true;
+    case VK_OEM_PLUS: case VK_ADD:
+        if (app.grid.Finer())
+        {
+            char b[96];
+            snprintf(b, sizeof b, "Finer grid: %d x %d cells", app.grid.Cols(), app.grid.Rows());
+            app.Notify(b, Pal::textDim);
+        }
+        return true;
+    case VK_OEM_MINUS: case VK_SUBTRACT:
+        if (app.grid.Coarser())
+        {
+            char b[96];
+            snprintf(b, sizeof b, "Coarser grid: %d x %d cells", app.grid.Cols(), app.grid.Rows());
+            app.Notify(b, Pal::textDim);
+        }
+        return true;
+    // Shared keys that make sense here.
+    case VK_F1: case 'S': case 'L': case 'O': case 'D': case 'V': case 'F': case VK_F11:
+        return false;
+    default:
+        return true;   // analyzer view toggles do nothing on this screen
+    }
+}
+
+static void OnKey(App& app, WPARAM key)
+{
+    if (app.gridMode && OnGridKey(app, key)) return;
+
+    switch (key)
+    {
+    case VK_TAB: SetGridMode(app, true); break;
     case VK_ESCAPE:
         if (app.view.showHelp) app.view.showHelp = false;
         else PostMessageW(app.hwnd, WM_CLOSE, 0, 0);
@@ -302,11 +551,14 @@ static void OnKey(App& app, WPARAM key)
     case 'O': OpenExportFolder(app); break;
     case 'R':
         app.tracker.ResetStats();
+        app.pad.ResetStats();
+        app.padIn.ResetStats();
         app.frame.Reset();
         app.Notify("Measurements reset", Pal::good);
         break;
     case 'C':
         app.tracker.ClearInk();
+        app.pad.ClearInk();
         app.rend.ClearInk();
         app.inkDrawn = app.tracker.InkTotal();
         app.Notify("Ink cleared", Pal::textDim);
@@ -360,39 +612,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return PA_ACTIVATE;
 
     case WM_INPUT:
-    {
-        if (app)
-        {
-            UINT size = 0;
-            if (GetRawInputData((HRAWINPUT)lp, RID_INPUT, nullptr, &size,
-                                sizeof(RAWINPUTHEADER)) == 0 && size)
-            {
-                if (g_rawBuf.size() < size) g_rawBuf.resize(size + 64);
-                if (GetRawInputData((HRAWINPUT)lp, RID_INPUT, g_rawBuf.data(), &size,
-                                    sizeof(RAWINPUTHEADER)) == size)
-                {
-                    const RAWINPUT* ri = (const RAWINPUT*)g_rawBuf.data();
-                    if (ri->header.dwType == RIM_TYPEHID)
-                    {
-                        // Several reports can be batched into one message. Only
-                        // reports that decode as touch reports are counted, so a
-                        // pen or configuration collection cannot skew the totals.
-                        const RAWHID& hid = ri->data.hid;
-                        const int64_t now = QpcNow();
-                        for (DWORD i = 0; i < hid.dwCount; ++i)
-                        {
-                            const BYTE* report = hid.bRawData + (size_t)i * hid.dwSizeHid;
-                            g_hidContacts.clear();
-                            HidReportInfo info;
-                            if (app->hid.Decode(ri->header.hDevice, report, hid.dwSizeHid, g_hidContacts, info))
-                                app->tracker.HandleHidReport(g_hidContacts, info, now);
-                        }
-                    }
-                }
-            }
-        }
+        // Only when the raw input thread could not start: the reports are
+        // queued the same way, stamped when this window gets to them.
+        if (app) app->rawPump.OnInput(lp);
         return DefWindowProcW(hwnd, msg, wp, lp);
-    }
 
     case WM_POINTERDEVICECHANGE:
         // Handles and descriptors may have changed; decode afresh.
@@ -422,10 +645,26 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_DPICHANGED:
         if (app)
         {
+            // The suggested rectangle keeps the window's logical size, which is
+            // wrong for a full screen window: it must cover its new monitor.
+            // Rebuild the fonts at the new DPI first: the resize below asks for
+            // the minimum size, which must be measured at the new scale.
+            app->rend.SetDpi(HIWORD(wp));
+
+            RECT fit;
             const RECT* r = (const RECT*)lp;
-            SetWindowPos(hwnd, nullptr, r->left, r->top,
-                         r->right - r->left, r->bottom - r->top,
-                         SWP_NOZORDER | SWP_NOACTIVATE);
+            if (app->view.fullscreen)
+            {
+                MONITORINFO mi{};
+                mi.cbSize = sizeof mi;
+                GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+                fit = mi.rcMonitor;
+                r = &fit;
+            }
+            if (!app->restoringPlacement)
+                SetWindowPos(hwnd, nullptr, r->left, r->top,
+                             r->right - r->left, r->bottom - r->top,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
             RefreshMonitor(*app, false);
         }
         return 0;
@@ -439,9 +678,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_GETMINMAXINFO:
     {
-        MINMAXINFO* mm = (MINMAXINFO*)lp;
-        mm->ptMinTrackSize.x = 900;
-        mm->ptMinTrackSize.y = 600;
+        // Full screen is sized to its monitor, which may be smaller than the
+        // minimum; the layout copes with that case on its own.
+        if (app && app->ready && !app->view.fullscreen)
+        {
+            const SIZE mn = MinWindowSize(*app);
+            MINMAXINFO* mm = (MINMAXINFO*)lp;
+            mm->ptMinTrackSize.x = mn.cx;
+            mm->ptMinTrackSize.y = mn.cy;
+        }
         return 0;
     }
 
@@ -520,6 +765,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     app.exportDir = opt.exportDir;
     app.tracker.Init(opt.capacity);
     app.tracker.SetUseHistory(opt.history);
+    // A pad reports at most five or so contacts, so half the rows go as far.
+    app.pad.Init(opt.capacity / 2, true);
+    app.padIn.Init(&app.pad);
     app.frame.Init();
     app.startQpc = QpcNow();
     app.nowQpc = app.startQpc;
@@ -556,7 +804,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
 
     app.tracker.SetWindow(app.hwnd);
     DisableTouchFeedback(app.hwnd);
-    RegisterDigitizerRawInput(app.hwnd);
+    // Digitizer reports arrive on a thread of their own, which stamps each
+    // one as it lands; failing that, on this window.
+    if (!app.rawPump.Start()) app.rawPump.Attach(app.hwnd);
     app.edgeSwipeApplied = BlockEdgeSwipes(app.hwnd);
 
     UINT dpi = GetDpiForWindow(app.hwnd);
@@ -567,18 +817,25 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                     L"TouchRate", MB_ICONERROR | MB_OK);
         return 1;
     }
+    // Layout metrics exist only once the renderer has built its fonts; the
+    // window was created before that, so bring it up to the minimum now.
+    app.ready = true;
+    EnforceMinimumSize(app);
 
     ShowWindow(app.hwnd, SW_SHOW);
     UpdateWindow(app.hwnd);
     SetForegroundWindow(app.hwnd);
 
     RefreshDevices(app, false);
+    app.source = DefaultSource(app);
     RefreshMonitor(app, true);
     if (opt.fullscreen) ToggleFullscreen(app);
     if (opt.log) ToggleLiveLog(app);
 
     if (app.devices.empty())
         app.Notify("No touch digitizer detected - press [D] to re-enumerate", Pal::warn);
+    else if (app.ShowingPad())
+        app.Notify("Ready. Put fingers on the touch pad to measure it; press [F1] for help.", Pal::good);
     else
         app.Notify("Ready. Touch the screen to measure; press [F1] for help.", Pal::good);
 
@@ -588,6 +845,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
 
     while (running)
     {
+        // Raw reports first, so a report is on record before the pointer
+        // messages it produced are matched against it.
+        ProcessRawInput(app);
+
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
         {
@@ -614,6 +875,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
             if (m != lastMonitor) { lastMonitor = m; RefreshMonitor(app, true); }
             if (app.activeDevice < 0 && app.tracker.LastSourceDevice())
                 app.activeDevice = FindDeviceByHandle(app.devices, app.tracker.LastSourceDevice());
+            if (app.padIn.Device() &&
+                (app.padDevice < 0 || app.devices[(size_t)app.padDevice].rawHandle != app.padIn.Device()))
+                app.padDevice = FindDeviceByHandle(app.devices, app.padIn.Device());
         }
 
         POINT origin{ 0, 0 };
@@ -621,6 +885,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
         app.tracker.SetClientOrigin(origin);
         app.tracker.SetEdgeSwipeBlocked(app.EdgeSwipeBlocked());
         app.tracker.Update(app.nowQpc);
+        app.padIn.Update(app.nowQpc);
+        app.pad.Update(app.nowQpc);
+        FollowSource(app);
+        if (app.gridMode) UpdateGridScan(app);
 
         app.rend.WaitForPresentSlot();
         app.frame.Tick(QpcNow());
@@ -634,7 +902,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 50, QS_ALLINPUT);
     }
 
+    app.rawPump.Stop();
     app.tracker.StopLiveLog();
+    app.pad.StopLiveLog();
     app.vblank.Stop();
     app.rend.Shutdown();
     timeEndPeriod(1);
