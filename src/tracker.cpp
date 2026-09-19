@@ -7,8 +7,9 @@ const char* SampleKindName(uint8_t k)
 
 // ------------------------------------------------------------------ lifecycle
 
-void Tracker::Init(size_t exportCapacity)
+void Tracker::Init(size_t exportCapacity, bool pad)
 {
+    m_pad = pad;
     if (exportCapacity < 1000) exportCapacity = 1000;
     m_recs.assign(exportCapacity, ExportRec{});
     m_recHead = m_recCount = 0;
@@ -225,9 +226,13 @@ void Tracker::HandleHidReport(const std::vector<HidContactSample>& contacts,
 // same report arrive in either order; whichever lands second makes the match.
 void Tracker::MatchHidToPointers(HidTrack& t)
 {
+    const int64_t grace = MsToQpc(kMatchGraceMs);
     for (const Contact& pc : m_slots)
     {
-        if (!pc.active) continue;
+        // Raw reports are handled in batches, so a quick tap can be down and
+        // up again before its report is; a contact released moments ago counts.
+        const bool recent = pc.everUsed && pc.upQpc && t.lastQpc - pc.upQpc <= grace;
+        if (!pc.active && !recent) continue;
         if (!t.mapped) { t.delivered = true; return; }   // no mapping: timing only
         const double dx = (double)pc.rawX - t.sx, dy = (double)pc.rawY - t.sy;
         const double d = std::sqrt(dx * dx + dy * dy);
@@ -386,7 +391,14 @@ int Tracker::IngestFrames(uint32_t pointerId, int64_t hostQpc, bool isUp)
         }
     }
 
-    // Recount live contacts from slot state.
+    RecountLive(hostQpc);
+    return accepted;
+}
+
+// Live contacts from slot state, and the touching time and contact-count
+// records that depend on it.
+void Tracker::RecountLive(int64_t hostQpc)
+{
     int live = 0;
     for (const Contact& c : m_slots) if (c.active) ++live;
     if (live != m_contactsNow)
@@ -397,8 +409,6 @@ int Tracker::IngestFrames(uint32_t pointerId, int64_t hostQpc, bool isUp)
     }
     if (live > m_maxSimultaneous) m_maxSimultaneous = live;
     if (live >= 1 && live <= kMaxSlots) m_simSeen[live] = true;
-
-    return accepted;
 }
 
 // Record the gap to the previous frame. m_lastFrameQpc is cleared whenever the
@@ -466,47 +476,12 @@ void Tracker::AcceptSample(const POINTER_TOUCH_INFO& ti, int64_t hostQpc,
     float cx = (float)(pi.ptPixelLocationRaw.x - m_clientOrigin.x);
     float cy = (float)(pi.ptPixelLocationRaw.y - m_clientOrigin.y);
 
-    double dtMs = 0;
-    if (c.samples && c.lastDeviceQpc)
-    {
-        dtMs = QpcToMs(devQpc - c.lastDeviceQpc);
-        if (dtMs > 0.0 && dtMs < 2000.0)
-        {
-            c.dt.Add(dtMs);
-            c.instHz = 1000.0 / dtMs;
-        }
-    }
-
-    // A repeated down flag for a contact already being tracked is the same
-    // press, not a new one, so the stroke is only started once.
-    if (kind == SK_DOWN && !c.downCounted)
-    {
-        c.downCounted = true;
-        c.downQpc = devQpc;
-        c.downX = cx; c.downY = cy;
-        c.ClearTrail();
-        c.dt.Reset();
-        c.samples = 0;
-        c.pathLenPx = 0;
-        ++m_downs;
-        if (m_lastDownQpc)
-        {
-            double gap = QpcToMs(devQpc - m_lastDownQpc);
-            if (gap > 0 && gap < 60000.0) m_tapIntervalMs.Add(gap);
-        }
-        m_lastDownQpc = devQpc;
-        if (!fromHistory) c.downLatencyMs = QpcToMs(hostQpc - devQpc);
-    }
-    else if (c.samples)
-    {
-        float dx = cx - c.x, dy = cy - c.y;
-        c.pathLenPx += std::sqrt((double)(dx * dx + dy * dy));
-    }
+    bool started = false;
+    const double dtMs = AdvanceContact(c, kind, devQpc, cx, cy, started);
+    if (started && !fromHistory) c.downLatencyMs = QpcToMs(hostQpc - devQpc);
 
     c.pointerId = pid;
-    c.lastDeviceQpc = devQpc;
     c.lastHostQpc = hostQpc;
-    c.x = cx; c.y = cy;
     c.pxX = pi.ptPixelLocation.x;  c.pxY = pi.ptPixelLocation.y;
     c.rawX = pi.ptPixelLocationRaw.x; c.rawY = pi.ptPixelLocationRaw.y;
     c.hmX = pi.ptHimetricLocationRaw.x; c.hmY = pi.ptHimetricLocationRaw.y;
@@ -560,13 +535,7 @@ void Tracker::AcceptSample(const POINTER_TOUCH_INFO& ti, int64_t hostQpc,
     m_sampleRate.Tick(hostQpc);
 
     c.PushTrail(cx, cy, devQpc, pressure, fromHistory ? 1 : 0);
-    if (!m_ink.empty())
-    {
-        m_ink[m_inkHead] = InkPt{ cx, cy, (uint8_t)slot, (uint8_t)(fromHistory ? 1 : 0) };
-        m_inkHead = (m_inkHead + 1) % m_ink.size();
-        if (m_inkCount < m_ink.size()) ++m_inkCount;
-        ++m_inkTotal;
-    }
+    PushInk(cx, cy, slot, fromHistory);
 
     ExportRec r;
     r.deviceQpc = devQpc;
@@ -592,6 +561,134 @@ void Tracker::AcceptSample(const POINTER_TOUCH_INFO& ti, int64_t hostQpc,
     // Credit the panel contact this pointer sample corresponds to.
     if (!m_hidTracks.empty())
         MatchPointerToHid((float)pi.ptPixelLocationRaw.x, (float)pi.ptPixelLocationRaw.y, hostQpc);
+
+    if (kind == SK_UP) ReleaseSlot(slot, devQpc);
+}
+
+// Interval, stroke start and path for one sample of a contact - the part
+// touch screen and touch pad samples share. Returns the interval to the
+// contact's previous sample (0 for its first); 'started' is set when the
+// sample begins a new stroke.
+double Tracker::AdvanceContact(Contact& c, uint8_t kind, int64_t devQpc, float x, float y, bool& started)
+{
+    double dtMs = 0;
+    if (c.samples && c.lastDeviceQpc)
+    {
+        dtMs = QpcToMs(devQpc - c.lastDeviceQpc);
+        if (dtMs > 0.0 && dtMs < 2000.0)
+        {
+            c.dt.Add(dtMs);
+            c.instHz = 1000.0 / dtMs;
+        }
+    }
+
+    // A repeated down flag for a contact already being tracked is the same
+    // press, not a new one, so the stroke is only started once.
+    started = false;
+    if (kind == SK_DOWN && !c.downCounted)
+    {
+        started = true;
+        c.downCounted = true;
+        c.downQpc = devQpc;
+        c.downX = x; c.downY = y;
+        c.ClearTrail();
+        c.dt.Reset();
+        c.samples = 0;
+        c.pathLenPx = 0;
+        ++m_downs;
+        if (m_lastDownQpc)
+        {
+            double gap = QpcToMs(devQpc - m_lastDownQpc);
+            if (gap > 0 && gap < 60000.0) m_tapIntervalMs.Add(gap);
+        }
+        m_lastDownQpc = devQpc;
+    }
+    else if (c.samples)
+    {
+        float dx = x - c.x, dy = y - c.y;
+        c.pathLenPx += std::sqrt((double)(dx * dx + dy * dy));
+    }
+
+    c.lastDeviceQpc = devQpc;
+    c.x = x; c.y = y;
+    return dtMs;
+}
+
+void Tracker::PushInk(float x, float y, int slot, bool fromHistory)
+{
+    if (m_ink.empty()) return;
+    m_ink[m_inkHead] = InkPt{ x, y, (uint8_t)slot, (uint8_t)(fromHistory ? 1 : 0) };
+    m_inkHead = (m_inkHead + 1) % m_ink.size();
+    if (m_inkCount < m_ink.size()) ++m_inkCount;
+    ++m_inkTotal;
+}
+
+// ------------------------------------------------------------- touch pad
+
+void Tracker::HandlePadFrame(const std::vector<PadContact>& contacts, int64_t devQpc,
+                             int64_t hostQpc, uint32_t frameId)
+{
+    ++m_totalFrames;
+    m_frameRate.Tick(hostQpc);
+    AddFrameInterval(devQpc);
+
+    // A pad reports every contact in every frame, so one that is missing has
+    // gone without its final report - typically a finger the pad re-classed
+    // as a palm.
+    for (int i = 0; i < kMaxSlots; ++i)
+    {
+        if (!m_slots[i].active) continue;
+        bool present = false;
+        for (const PadContact& pc : contacts)
+            if (pc.id == m_slots[i].pointerId) { present = true; break; }
+        if (!present) ReleaseSlot(i, devQpc);
+    }
+
+    for (const PadContact& pc : contacts)
+        AcceptPadContact(pc, devQpc, hostQpc, frameId);
+
+    m_lastFrameContacts = (uint32_t)contacts.size();
+    EndFrame(devQpc);
+    RecountLive(hostQpc);
+}
+
+void Tracker::AcceptPadContact(const PadContact& pc, int64_t devQpc, int64_t hostQpc, uint32_t frameId)
+{
+    uint8_t kind = pc.tip ? SK_UPDATE : SK_UP;
+    int slot = FindSlot(pc.id);
+    if (slot < 0)
+    {
+        if (!pc.tip) return;            // a lift for a contact never seen down
+        slot = AssignSlot(pc.id);
+        if (slot < 0) return;
+        kind = SK_DOWN;
+    }
+    Contact& c = m_slots[slot];
+
+    bool started = false;
+    const double dtMs = AdvanceContact(c, kind, devQpc, pc.x, pc.y, started);
+    c.lastHostQpc = hostQpc;
+    c.pointerType = (uint8_t)PT_TOUCHPAD;
+    c.pressure = c.cw = c.ch = c.orient = -1;
+    ++c.samples;
+    c.rate.Tick(hostQpc);
+
+    ++m_totalSamples;
+    m_sampleRate.Tick(hostQpc);
+    // Pad positions are not screen positions, so they stay out of the ink.
+    c.PushTrail(pc.x, pc.y, devQpc, -1, 0);
+
+    ExportRec r;
+    r.deviceQpc = devQpc;
+    r.hostQpc = hostQpc;
+    r.pointerId = pc.id;
+    r.frameId = frameId;
+    r.x = pc.x; r.y = pc.y;
+    r.dtMs = (float)dtMs;
+    r.slot = (uint8_t)slot;
+    r.kind = kind;
+    r.pointerType = (uint8_t)PT_TOUCHPAD;
+    PushRecord(r);
 
     if (kind == SK_UP) ReleaseSlot(slot, devQpc);
 }
@@ -645,12 +742,39 @@ void Tracker::Update(int64_t now)
     }
 }
 
+// The rate at the most common interval. On a clock that counts in coarse
+// steps a steady rate is spread over neighbouring steps - a pad at 134 Hz on
+// a 1 ms clock reads as 7 and 8 ms - so there the rate is the centre of the
+// whole peak: every step within reach of the tallest one, but not a separate
+// cluster such as missed reports.
+static double PeakHz(const Histogram& h, double clockResMs)
+{
+    const int m = h.ModeBin();
+    if (m < 0) return 0;
+    if (clockResMs <= h.binW * 1.5)
+    {
+        const double ms = h.BinCenter(m);
+        return ms > 0 ? 1000.0 / ms : 0;
+    }
+    // Empty bins allowed between two steps, with one to spare for rounding.
+    const int reach = (int)std::ceil(clockResMs / h.binW) + 1;
+    int lo = m, hi = m;
+    for (int i = m - 1, gap = 0; i >= 0 && gap <= reach; --i)
+    {
+        if (h.bins[(size_t)i]) { lo = i; gap = 0; } else ++gap;
+    }
+    for (int i = m + 1, gap = 0; i < h.nbins && gap <= reach; ++i)
+    {
+        if (h.bins[(size_t)i]) { hi = i; gap = 0; } else ++gap;
+    }
+    double n = 0, sum = 0;
+    for (int i = lo; i <= hi; ++i) { n += (double)h.bins[(size_t)i]; sum += h.sums[(size_t)i]; }
+    return sum > 0 ? 1000.0 * n / sum : 0;
+}
+
 double Tracker::ModeHz() const
 {
-    int b = m_intervalHist.ModeBin();
-    if (b < 0) return 0;
-    double ms = m_intervalHist.BinCenter(b);
-    return ms > 0 ? 1000.0 / ms : 0;
+    return PeakHz(m_intervalHist, m_clockResMs);
 }
 
 // ------------------------------------------------------- rate by contact count
@@ -667,11 +791,7 @@ const Histogram& Tracker::IntervalHistAt(int contacts) const
 }
 double Tracker::ModeHzAt(int contacts) const
 {
-    const Histogram& h = m_intervalHistByCount[ClampCount(contacts)];
-    int b = h.ModeBin();
-    if (b < 0) return 0;
-    double ms = h.BinCenter(b);
-    return ms > 0 ? 1000.0 / ms : 0;
+    return PeakHz(m_intervalHistByCount[ClampCount(contacts)], m_clockResMs);
 }
 double Tracker::MeanHzAt(int contacts) const
 {
@@ -696,7 +816,7 @@ void Tracker::PushRecord(const ExportRec& r)
     m_recs[m_recHead] = r;
     m_recHead = (m_recHead + 1) % m_recs.size();
     if (m_recCount < m_recs.size()) ++m_recCount;
-    if (m_log) WriteLogRow(r);
+    if (m_log) { if (m_pad) WritePadLogRow(r); else WriteLogRow(r); }
 }
 
 // --------------------------------------------------------------- live logging
@@ -708,13 +828,17 @@ static const char* kCsvHeader =
     "himetric_x,himetric_y,predict_dx,predict_dy,"
     "pressure,contact_w,contact_h,orientation\n";
 
+const char* const kPadCsvHeader =
+    "seq,kind,contact_id,slot,frame,device_qpc,device_ms,host_qpc,host_ms,"
+    "dt_ms,inst_hz,x,y\n";
+
 bool Tracker::StartLiveLog(const std::wstring& path)
 {
     StopLiveLog();
     FILE* f = nullptr;
     if (_wfopen_s(&f, path.c_str(), L"wb") != 0 || !f) return false;
     setvbuf(f, nullptr, _IOFBF, 1 << 20);
-    fputs(kCsvHeader, f);
+    fputs(m_pad ? kPadCsvHeader : kCsvHeader, f);
     m_log = f;
     m_logPath = path;
     m_logRows = 0;
@@ -744,5 +868,15 @@ void Tracker::WriteLogRow(const ExportRec& r)
     if (r.pressure >= 0) fprintf(m_log, "%.4f,", r.pressure); else fputs(",", m_log);
     if (r.cw >= 0) fprintf(m_log, "%.1f,%.1f,", r.cw, r.ch); else fputs(",,", m_log);
     if (r.orient >= 0) fprintf(m_log, "%.1f\n", r.orient); else fputs("\n", m_log);
+    ++m_logRows;
+}
+
+void Tracker::WritePadLogRow(const ExportRec& r)
+{
+    const double instHz = r.dtMs > 0 ? 1000.0 / r.dtMs : 0.0;
+    fprintf(m_log, "%llu,%s,%u,%u,%u,%lld,%.6f,%lld,%.6f,%.6f,%.3f,%.1f,%.1f\n",
+            (unsigned long long)m_logRows, SampleKindName(r.kind), r.pointerId, r.slot, r.frameId,
+            (long long)r.deviceQpc, QpcToMs(r.deviceQpc), (long long)r.hostQpc, QpcToMs(r.hostQpc),
+            r.dtMs, instHz, r.x, r.y);
     ++m_logRows;
 }

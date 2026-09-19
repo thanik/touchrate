@@ -129,16 +129,19 @@ struct Histogram
     int      nbins = 0;
     uint64_t under = 0, over = 0, total = 0;
     std::vector<uint64_t> bins;
+    std::vector<double>   sums;   // sum of the values in each bin, for exact centroids
 
     void Init(double lo_, double binW_, int nb)
     {
         lo = lo_; binW = binW_; nbins = nb;
         bins.assign((size_t)nb, 0);
+        sums.assign((size_t)nb, 0.0);
         under = over = total = 0;
     }
     void Reset()
     {
         std::fill(bins.begin(), bins.end(), (uint64_t)0);
+        std::fill(sums.begin(), sums.end(), 0.0);
         under = over = total = 0;
     }
     void Add(double v)
@@ -148,6 +151,7 @@ struct Histogram
         if (i < 0) { ++under; return; }
         if (i >= nbins) { ++over; return; }
         ++bins[(size_t)i];
+        sums[(size_t)i] += v;
     }
     uint64_t MaxBin() const
     {

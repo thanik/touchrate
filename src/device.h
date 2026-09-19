@@ -28,6 +28,10 @@ struct TouchDevice
     DWORD    displayOrientation = 0;
 
     // Derived
+    // Contacts the device can track at once. The descriptor's slots are per
+    // report, and a panel in hybrid mode splits more contacts than that across
+    // several reports, so the device's own declared maximum can be larger.
+    uint32_t ContactCapacity() const { return std::max(maxContacts, hidMaxContacts); }
     double StepsPerPixelX() const;
     double StepsPerPixelY() const;
     std::string VidPidString() const;   // "VID_04F3 PID_2A00"

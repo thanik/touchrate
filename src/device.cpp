@@ -149,9 +149,13 @@ static void QueryHidDetails(TouchDevice& d)
         d.version = attr.VersionNumber;
     }
 
+    // Some devices return the string without a terminator, so the buffer is
+    // cleared before each call and one character is kept back for it.
     wchar_t buf[256];
-    if (HidD_GetProductString(h, buf, sizeof buf)) { buf[255] = 0; d.product = Trim(buf); }
-    if (HidD_GetManufacturerString(h, buf, sizeof buf)) { buf[255] = 0; d.manufacturer = Trim(buf); }
+    ZeroMemory(buf, sizeof buf);
+    if (HidD_GetProductString(h, buf, sizeof buf - sizeof(wchar_t))) d.product = Trim(buf);
+    ZeroMemory(buf, sizeof buf);
+    if (HidD_GetManufacturerString(h, buf, sizeof buf - sizeof(wchar_t))) d.manufacturer = Trim(buf);
 
     PHIDP_PREPARSED_DATA pp = nullptr;
     if (HidD_GetPreparsedData(h, &pp) && pp)

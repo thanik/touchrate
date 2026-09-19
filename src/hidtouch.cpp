@@ -7,6 +7,7 @@ extern "C" {
 namespace {
 
 constexpr USAGE kPageGeneric   = 0x01;
+constexpr USAGE kPageButton    = 0x09;
 constexpr USAGE kPageDigitizer = 0x0D;
 constexpr USAGE kUsageX        = 0x30;
 constexpr USAGE kUsageY        = 0x31;
@@ -14,6 +15,23 @@ constexpr USAGE kTipSwitch     = 0x42;
 constexpr USAGE kConfidence    = 0x47;
 constexpr USAGE kContactId     = 0x51;
 constexpr USAGE kContactCount  = 0x54;
+constexpr USAGE kScanTime      = 0x56;
+
+// Millimetres spanned by a value's physical range, or 0 when the descriptor
+// does not declare it as a length.
+double PhysicalMm(const HIDP_VALUE_CAPS& c)
+{
+    const double span = (double)c.PhysicalMax - (double)c.PhysicalMin;
+    if (span <= 0) return 0;
+    double mmPerUnit;
+    if (c.Units == 0x11)      mmPerUnit = 10.0;   // SI linear, centimetres
+    else if (c.Units == 0x13) mmPerUnit = 25.4;   // English linear, inches
+    else return 0;
+    int e = (int)(c.UnitsExp & 0xF);              // a signed four-bit exponent
+    if (e > 7) e -= 16;
+    const double mm = span * mmPerUnit * std::pow(10.0, e);
+    return (mm >= 5.0 && mm <= 2000.0) ? mm : 0.0;
+}
 
 std::wstring DevicePath(HANDLE h)
 {
@@ -60,6 +78,7 @@ HidTouchDecoder::Dev* HidTouchDecoder::Get(HANDLE h)
     if (GetRawInputDeviceInfoW(h, RIDI_DEVICEINFO, &info, &sz) == (UINT)-1) return &d;
     if (info.dwType != RIM_TYPEHID || info.hid.usUsagePage != kPageDigitizer) return &d;
     if (info.hid.usUsage != 0x04 && info.hid.usUsage != 0x05) return &d;   // touch screen / pad
+    d.desc.pad = info.hid.usUsage == 0x05;
 
     UINT ppSize = 0;
     GetRawInputDeviceInfoW(h, RIDI_PREPARSEDDATA, nullptr, &ppSize);
@@ -87,6 +106,7 @@ HidTouchDecoder::Dev* HidTouchDecoder::Get(HANDLE h)
             {
                 d.desc.xMin = c.LogicalMin;
                 d.desc.xMax = c.LogicalMax;
+                d.desc.widthMm = PhysicalMm(c);
                 d.desc.reportId = c.ReportID;
                 haveRange = true;
             }
@@ -95,6 +115,13 @@ HidTouchDecoder::Dev* HidTouchDecoder::Get(HANDLE h)
         {
             d.desc.yMin = c.LogicalMin;
             d.desc.yMax = c.LogicalMax;
+            d.desc.heightMm = PhysicalMm(c);
+        }
+        else if (c.UsagePage == kPageDigitizer && u == kScanTime)
+        {
+            d.desc.hasScanTime = true;
+            d.desc.scanTimeBits = std::min<uint32_t>(c.BitSize, 32);
+            d.scanLc = c.LinkCollection;
         }
         else if (c.UsagePage == kPageDigitizer && u == kContactCount)
         {
@@ -113,9 +140,15 @@ HidTouchDecoder::Dev* HidTouchDecoder::Get(HANDLE h)
     for (USHORT i = 0; i < nb; ++i)
     {
         const HIDP_BUTTON_CAPS& c = bc[i];
-        if (c.UsagePage != kPageDigitizer) continue;
         const USAGE lo = c.IsRange ? c.Range.UsageMin : c.NotRange.Usage;
         const USAGE hi = c.IsRange ? c.Range.UsageMax : c.NotRange.Usage;
+        if (c.UsagePage == kPageButton && !d.desc.hasButton)
+        {
+            // A touch pad's click button: the whole pad, or its left half.
+            d.desc.hasButton = true;
+            d.buttonLc = c.LinkCollection;
+        }
+        if (c.UsagePage != kPageDigitizer) continue;
         if (kTipSwitch >= lo && kTipSwitch <= hi) d.desc.hasTipSwitch = true;
         if (kConfidence >= lo && kConfidence <= hi) d.desc.hasConfidence = true;
     }
@@ -155,8 +188,30 @@ bool HidTouchDecoder::Decode(HANDLE device, const BYTE* report, ULONG len,
     const auto rep = (PCHAR)report;
 
     info = HidReportInfo{};
+    info.pad = d->desc.pad;
     info.display = d->display;
     info.haveDisplay = d->haveDisplay;
+
+    if (d->desc.hasScanTime)
+    {
+        ULONG v = 0;
+        if (HidP_GetUsageValue(HidP_Input, kPageDigitizer, d->scanLc, kScanTime,
+                               &v, pp, rep, len) == HIDP_STATUS_SUCCESS)
+        {
+            info.haveScanTime = true;
+            info.scanTime = (uint32_t)v;
+        }
+    }
+    if (d->desc.hasButton)
+    {
+        USAGE b[16];
+        ULONG nb = _countof(b);
+        if (HidP_GetUsages(HidP_Input, kPageButton, d->buttonLc, b, &nb, pp, rep, len) == HIDP_STATUS_SUCCESS)
+        {
+            info.haveButton = true;
+            info.button = nb > 0;
+        }
+    }
 
     if (d->desc.hasContactCount)
     {
@@ -185,12 +240,15 @@ bool HidTouchDecoder::Decode(HANDLE device, const BYTE* report, ULONG len,
         if (d->desc.hasContactId)
             HidP_GetUsageValue(HidP_Input, kPageDigitizer, lc, kContactId, &id, pp, rep, len);
 
-        bool tip = false;
+        bool tip = false, confident = !d->desc.hasConfidence;
         USAGE usages[32];
         ULONG n = _countof(usages);
         if (HidP_GetUsages(HidP_Input, kPageDigitizer, lc, usages, &n, pp, rep, len) == HIDP_STATUS_SUCCESS)
             for (ULONG k = 0; k < n; ++k)
+            {
                 if (usages[k] == kTipSwitch) tip = true;
+                if (usages[k] == kConfidence) confident = true;
+            }
 
         if (d->desc.hasContactCount && d->remaining) --d->remaining;
 
@@ -200,9 +258,11 @@ bool HidTouchDecoder::Decode(HANDLE device, const BYTE* report, ULONG len,
         HidContactSample c;
         c.id = id;
         c.tip = tip;
+        c.confident = confident;
         c.x = (int32_t)x;
         c.y = (int32_t)y;
-        if (d->haveDisplay)
+        // A touch pad is not mapped to the screen; its positions stay in pad units.
+        if (d->haveDisplay && !d->desc.pad)
         {
             const float w = (float)(d->display.right - d->display.left);
             const float h = (float)(d->display.bottom - d->display.top);
@@ -216,6 +276,7 @@ bool HidTouchDecoder::Decode(HANDLE device, const BYTE* report, ULONG len,
     }
 
     info.kind = anyTip ? HRK_TOUCH : (anyContact ? HRK_NOTIP : HRK_EMPTY);
-    m_last = device;
+    info.frameEnd = !d->desc.hasContactCount || d->remaining == 0;
+    (d->desc.pad ? m_lastPad : m_lastScreen) = device;
     return true;
 }

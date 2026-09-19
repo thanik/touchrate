@@ -6,6 +6,9 @@
 #include "device.h"
 #include "display.h"
 #include "export.h"
+#include "gridscan.h"
+#include "touchpad.h"
+#include "rawinput.h"
 
 struct ViewOpts
 {
@@ -18,6 +21,10 @@ struct ViewOpts
     bool fullscreen = false;
 };
 
+// The input the analyzer is showing. A laptop can have both, and they are
+// measured separately; the view follows whichever was touched last.
+enum class Source { Screen, Pad };
+
 struct Toast
 {
     std::string text;
@@ -28,9 +35,16 @@ struct Toast
 struct App
 {
     HWND        hwnd = nullptr;
+    bool        ready = false;      // renderer up; layout metrics are valid
     Renderer    rend;
     Tracker     tracker;
     HidTouchDecoder hid;
+    RawInputPump rawPump;
+    Tracker     pad;              // the touch pad, measured apart from the screen
+    TouchPadInput padIn;
+    Source      source = Source::Screen;
+    int         padDevice = -1;   // index in devices of the pad that reported
+    uint64_t    screenDownsSeen = 0, padDownsSeen = 0;
     bool        edgeSwipeApplied = false;   // the shell accepted the window property
     FrameStats  frame;
     MonitorInfo monitor;
@@ -50,6 +64,33 @@ struct App
     // Saved placement for the borderless-fullscreen toggle.
     WINDOWPLACEMENT savedPlacement{};
     DWORD           savedStyle = 0;
+    bool            restoringPlacement = false;   // saved size is already per-monitor
+
+    // Grid scan screen (dead zone test).
+    GridScan    grid;
+    bool        gridMode = false;
+    bool        gridWasFullscreen = false;   // restore this on leaving the mode
+    bool        gridResync = false;          // skip samples from before entry
+    uint64_t    gridInk = 0;                 // tracker ink points already binned
+
+    bool ShowingPad() const { return source == Source::Pad; }
+    Tracker& Shown() { return ShowingPad() ? pad : tracker; }
+    const Tracker& Shown() const { return ShowingPad() ? pad : tracker; }
+
+    // The device the view is about: the touch pad, or the touch screen that
+    // reported last, falling back to the first of each kind enumerated.
+    const TouchDevice* ShownDevice() const
+    {
+        if (ShowingPad())
+        {
+            if (padDevice >= 0 && (size_t)padDevice < devices.size()) return &devices[(size_t)padDevice];
+            for (const TouchDevice& d : devices) if (d.usage == 0x05) return &d;
+            return nullptr;
+        }
+        if (activeDevice >= 0 && (size_t)activeDevice < devices.size()) return &devices[(size_t)activeDevice];
+        for (const TouchDevice& d : devices) if (d.usage != 0x05) return &d;
+        return devices.empty() ? nullptr : &devices[0];
+    }
 
     // Edge swipes are always blocked, but the shell only honours that while the
     // window is full screen.
@@ -77,3 +118,6 @@ struct App
 };
 
 void DrawUi(App& app);
+
+// Smallest client size at which the analyzer layout fits, at the renderer's DPI.
+void MinClientSize(const Renderer& r, int& w, int& h);

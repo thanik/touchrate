@@ -24,12 +24,21 @@ struct InkPt
     uint8_t fromHistory = 0;
 };
 
+// One finger in a complete touch pad frame, in pad units. A contact with tip
+// false is lifting in this frame.
+struct PadContact
+{
+    uint32_t id = 0;
+    bool     tip = false;
+    float    x = 0, y = 0;
+};
+
 // One row per accepted hardware sample; this is what gets exported.
 struct ExportRec
 {
     int64_t  deviceQpc = 0, hostQpc = 0;
     uint32_t pointerId = 0, frameId = 0;
-    float    x = 0, y = 0;                 // client pixels
+    float    x = 0, y = 0;                 // client pixels; pad units for a touch pad
     int32_t  pxX = 0, pxY = 0;             // screen pixels (processed)
     int32_t  rawX = 0, rawY = 0;           // screen pixels (unprocessed)
     int32_t  hmX = 0, hmY = 0;             // himetric, unprocessed
@@ -105,10 +114,14 @@ struct Contact
     void ClearTrail() { trailCount = 0; trailHead = 0; }
 };
 
+// Measures one input source. The touch screen feeds it pointer messages; a
+// touch pad, which Windows never delivers as touch, feeds a second instance
+// whole frames decoded from its HID reports.
 class Tracker
 {
 public:
-    void Init(size_t exportCapacity);
+    void Init(size_t exportCapacity, bool pad = false);
+    bool IsPad() const { return m_pad; }
     void ResetStats();          // clears measurements, keeps live contacts
     void ClearInk();
 
@@ -123,6 +136,11 @@ public:
     // One decoded HID touch report from the digitizer, via Raw Input.
     void HandleHidReport(const std::vector<HidContactSample>& contacts,
                          const HidReportInfo& info, int64_t now);
+    // One complete touch pad frame: its finger contacts, the pad's own clock
+    // mapped to QPC units, and the arrival time. Contacts absent from the
+    // frame have lifted.
+    void HandlePadFrame(const std::vector<PadContact>& contacts, int64_t devQpc,
+                        int64_t hostQpc, uint32_t frameId);
     void Update(int64_t now);   // per-frame bookkeeping
 
     // Whether Windows edge-swipe gestures are currently blocked for the window.
@@ -173,6 +191,12 @@ public:
     double MaxGapMs() const { return m_maxGapMs; }
     double AvgHz()    const { return m_intervalMs.n && m_intervalMs.mean > 0 ? 1000.0 / m_intervalMs.mean : 0.0; }
     double ModeHz()   const;
+
+    // Resolution of the clock the intervals are timed on, when it is coarser
+    // than the histogram: a touch pad's scan time may count whole milliseconds.
+    // The modal rate is then the centre of the interval peak, not its tallest step.
+    void   SetClockResolutionMs(double ms) { m_clockResMs = ms; }
+    double ClockResolutionMs() const { return m_clockResMs; }
 
     // Report rate broken down by how many contacts the digitizer was tracking.
     // Many panels slow down as fingers are added, which is exactly the case a
@@ -231,6 +255,10 @@ public:
 private:
     int  IngestFrames(uint32_t pointerId, int64_t hostQpc, bool isUp);
     void AcceptSample(const POINTER_TOUCH_INFO& ti, int64_t hostQpc, bool fromHistory, bool isUp);
+    void AcceptPadContact(const PadContact& pc, int64_t devQpc, int64_t hostQpc, uint32_t frameId);
+    double AdvanceContact(Contact& c, uint8_t kind, int64_t devQpc, float x, float y, bool& started);
+    void PushInk(float x, float y, int slot, bool fromHistory);
+    void RecountLive(int64_t hostQpc);
     void AddFrameInterval(int64_t devQpc);
     void EndFrame(int64_t devQpc);
     void MatchPointerToHid(float screenX, float screenY, int64_t hostQpc);
@@ -241,7 +269,10 @@ private:
     void ReleaseSlot(int slot, int64_t qpc, bool genuine = true);
     void PushRecord(const ExportRec& r);
     void WriteLogRow(const ExportRec& r);
+    void WritePadLogRow(const ExportRec& r);
 
+    bool  m_pad = false;
+    double m_clockResMs = 0;
     HWND  m_hwnd = nullptr;
     POINT m_clientOrigin{ 0, 0 };
     bool  m_useHistory = true;
@@ -311,3 +342,6 @@ private:
 };
 
 const char* SampleKindName(uint8_t k);
+
+// Column header of a touch pad sample CSV, shared by the export and the live log.
+extern const char* const kPadCsvHeader;
