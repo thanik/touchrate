@@ -427,11 +427,12 @@ static void DrawUndelivered(App& app, const Rect2& box)
     }
 
     // A live contact becomes suspect only after the normal few-millisecond
-    // gap between a raw report and its pointer message has clearly passed.
+    // gap between a raw report and its pointer message has clearly passed,
+    // and only if it started in this window rather than on another one.
     const float pulse = 0.55f + 0.45f * (float)std::sin(QpcToSec(now) * 12.0);
     for (const HidTrack& h : t.HidTracks())
     {
-        if (h.delivered || h.ended || !h.mapped) continue;
+        if (h.delivered || h.ended || !h.mapped || h.offWindow) continue;
         if (QpcToMs(now - h.firstQpc) < 60.0) continue;
 
         const float x = h.sx - (float)o.x, y = h.sy - (float)o.y;

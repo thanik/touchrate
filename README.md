@@ -136,6 +136,14 @@ them — contact IDs, positions and the TipSwitch flag — independently of the
 Windows pointer stack. It then matches every contact the panel reported against
 the pointer contacts Windows actually delivered, by position and time.
 
+Only touches that start in TouchRate's own window are judged. Windows delivers
+a touch to the window under the finger, so with TouchRate windowed, a touch on
+another application, the desktop, the taskbar or TouchRate's title bar rightly
+goes there instead. TouchRate hit-tests where each panel contact starts and
+counts those separately, as touches on other windows, not as lost. In full
+screen the window covers the whole display, so touches at the screen edge are
+still judged.
+
 A touch the panel reported but Windows never delivered is marked on screen with
 a red cross, flagged live with a pulsing ring while the finger is still down,
 and counted as lost in the stats panel. The export lists each one with its
@@ -144,8 +152,13 @@ position, duration and distance from the screen edge, and diagnoses the cause:
 - **Lost at the screen edges, outside full screen** — Windows reserves the edges
   for swipe gestures and hands those touches to the shell instead of the window
   under the finger.
-- **Lost with edge-swipe blocking in effect** — something else took them, most
-  often a topmost window such as the taskbar along that edge.
+- **Lost with edge-swipe blocking in effect** — the touch started on TouchRate's
+  own window and still never arrived, so neither edge gestures nor another
+  window explain it: look for a system setting or background tool that reserves
+  the edge.
+- **On another window while full screen** — something sits above TouchRate,
+  most often the taskbar or an always-on-top overlay. Those touches went to that
+  window, so they are counted with the other-window touches, not as lost.
 - **Reports arrive but no contact is ever flagged as touching** — the panel
   detected something and chose not to report it as a touch: firmware edge or
   palm rejection.
@@ -232,7 +245,7 @@ measurement is readable in the browser with no tooling.
 | `summary.json` | Every figure above, machine-readable |
 | `raw/samples.csv.gz` | Every buffered sample: device and host timestamps, interval, instantaneous Hz, latency, client/screen/raw/himetric coordinates, prediction delta, pressure, contact area. gzip — around 6x smaller, and read directly by `pandas.read_csv`, R, 7-Zip and `zcat` |
 | `raw/rate_by_contacts.csv` | Report rate for each simultaneous contact count, with percent of the single-contact baseline |
-| `raw/undelivered_touches.csv` | Every touch the panel reported that Windows did not deliver: position, duration, distance from the edge, whether edge-swipe blocking was in effect |
+| `raw/undelivered_touches.csv` | Every touch that started in TouchRate's window and that Windows did not deliver: position, duration, distance from the edge, whether edge-swipe blocking was in effect |
 | `raw/contacts.csv` | Per-contact summary: sample count, interval stats, path length, down latency |
 | `raw/interval_histogram.csv` | Report-interval distribution with Hz equivalents |
 | `raw/latency_histogram.csv` | Delivery-latency distribution |
@@ -259,8 +272,8 @@ In `raw/samples.csv.gz`, all contacts belonging to one hardware report share a
 - Raw Input is registered with `RIDEV_INPUTSINK`, so HID report counts include
   touches made while another window has focus.
 - Windows edge swipes are blocked for the window, which Windows only honours in
-  full screen. Outside full screen, touches that start at the screen edge go to
-  the shell and are reported as lost.
+  full screen. Outside full screen, touches that start at the screen edge where
+  TouchRate's window reaches it go to the shell and are reported as lost.
 - HID positions map from the digitizer's logical range onto its display. A
   rotated display is not yet accounted for, so lost-touch positions may be
   misplaced on one.

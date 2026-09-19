@@ -52,6 +52,7 @@ void Tracker::ResetStats()
     m_undeliveredDropped = 0;
     m_hidFrames = m_hidTouchReports = m_hidNoTipReports = m_hidEmptyReports = 0;
     m_hidContacts = m_hidDelivered = m_hidUndelivered = 0;
+    m_hidOffWindow = m_hidOffWindowBlocked = 0;
     m_hidMatchOffset.Reset(); m_deliveredEdge.Reset(); m_undeliveredEdge.Reset();
     m_maxSimultaneous = m_contactsNow;
     for (int i = 0; i <= kMaxSlots; ++i) m_simSeen[i] = false;
@@ -194,6 +195,7 @@ void Tracker::HandleHidReport(const std::vector<HidContactSample>& contacts,
 
         if (!t)
         {
+            const bool offWindow = !StartsInWindow(c, info);
             if (m_hidTracks.size() >= kMaxTracks)
             {
                 // Something is churning contact ids; settle the oldest now.
@@ -204,6 +206,7 @@ void Tracker::HandleHidReport(const std::vector<HidContactSample>& contacts,
             t = &m_hidTracks.back();
             t->id = c.id;
             t->mapped = c.mapped;
+            t->offWindow = offWindow;
             t->firstQpc = now;
             t->firstX = c.sx;
             t->firstY = c.sy;
@@ -217,8 +220,38 @@ void Tracker::HandleHidReport(const std::vector<HidContactSample>& contacts,
         if (c.mapped && info.haveDisplay)
             t->edgeDistPx = std::min(t->edgeDistPx, EdgeDistance(info.display, c.sx, c.sy));
 
-        if (!t->delivered) MatchHidToPointers(*t);
+        if (!t->delivered && !t->offWindow) MatchHidToPointers(*t);
     }
+}
+
+// Pointer input goes to the window under the finger, and a touch on the frame
+// or title bar arrives as non-client input, so the app can only be expected to
+// receive contacts that start in its client area. In full screen that area is
+// the whole display, edges included.
+bool Tracker::StartsInWindow(const HidContactSample& c, const HidReportInfo& info) const
+{
+    if (!m_hwnd || !c.mapped) return true;   // nothing to test against: judge it
+
+    // The far edge of the logical range maps one pixel past the display, and
+    // firmware can overshoot it; test the edge pixel, not whatever lies beyond.
+    float x = c.sx, y = c.sy;
+    if (info.haveDisplay)
+    {
+        x = std::max(x, (float)info.display.left);
+        x = std::min(x, (float)(info.display.right - 1));
+        y = std::max(y, (float)info.display.top);
+        y = std::min(y, (float)(info.display.bottom - 1));
+    }
+    return m_hitTest(m_hwnd, POINT{ (LONG)std::floor(x), (LONG)std::floor(y) });
+}
+
+bool Tracker::HitTestClient(HWND hwnd, POINT screenPt)
+{
+    HWND hit = WindowFromPoint(screenPt);
+    if (!hit || GetAncestor(hit, GA_ROOT) != hwnd) return false;
+    RECT rc{};
+    POINT pt = screenPt;
+    return GetClientRect(hwnd, &rc) && ScreenToClient(hwnd, &pt) && PtInRect(&rc, pt);
 }
 
 // Matching runs from both sides because raw input and pointer messages for the
@@ -249,6 +282,9 @@ void Tracker::MatchPointerToHid(float screenX, float screenY, int64_t hostQpc)
 
     for (HidTrack& t : m_hidTracks)
     {
+        // A contact that started on another window belongs to that window for
+        // its whole life, so none of this window's input can be its delivery.
+        if (t.offWindow) continue;
         // Bound by the last report, not by now: a contact that stopped
         // reporting but has not been swept yet must not absorb later input.
         const int64_t end = t.ended ? t.endQpc : t.lastQpc;
@@ -272,6 +308,13 @@ void Tracker::MatchPointerToHid(float screenX, float screenY, int64_t hostQpc)
 
 void Tracker::FinalizeHidTrack(const HidTrack& t)
 {
+    if (t.offWindow)
+    {
+        ++m_hidOffWindow;
+        if (t.edgeSwipeBlocked) ++m_hidOffWindowBlocked;
+        return;
+    }
+
     ++m_hidContacts;
     if (t.delivered)
     {

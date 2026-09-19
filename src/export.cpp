@@ -253,7 +253,10 @@ void MdDelivery(Out& o, const ExportContext& ctx)
     o.S("## Touch delivery\n\n");
     o.S("Contacts the panel itself reported, decoded from its raw HID reports, compared\n"
         "with the pointer contacts Windows delivered to the app. A contact that appears\n"
-        "in the first but not the second never reached the application at all.\n\n");
+        "in the first but not the second never reached the application at all.\n\n"
+        "Windows delivers a touch to the window under the finger, so only contacts that\n"
+        "started in TouchRate's window are judged. One that started on another window, the\n"
+        "desktop, the taskbar or TouchRate's title bar went there, and is counted separately.\n\n");
 
     // Describe the device that reported, or failing that the active digitizer,
     // so what the panel can express is on record even without touch data.
@@ -283,9 +286,14 @@ void MdDelivery(Out& o, const ExportContext& ctx)
     }
 
     o.S("| Metric | Value |\n| --- | --- |\n");
-    o.P("| Panel contacts (TipSwitch set) | %llu |\n", (unsigned long long)t.HidContacts());
+    o.P("| Panel contacts judged (TipSwitch set, started in the window) | %llu |\n",
+        (unsigned long long)t.HidContacts());
     o.P("| Delivered to the app | %llu |\n", (unsigned long long)t.HidDelivered());
     o.P("| **Not delivered** | **%llu** |\n", (unsigned long long)t.HidUndelivered());
+    o.P("| Started on another window, not judged | %llu", (unsigned long long)t.HidOffWindow());
+    if (t.HidOffWindowBlocked())
+        o.P(" (%llu with TouchRate full screen)", (unsigned long long)t.HidOffWindowBlocked());
+    o.S(" |\n");
     o.P("| HID reports: touching / not touching / empty | %llu / %llu / %llu |\n",
         (unsigned long long)t.HidTouchReports(), (unsigned long long)t.HidNoTipReports(),
         (unsigned long long)t.HidEmptyReports());
@@ -328,23 +336,43 @@ void MdDelivery(Out& o, const ExportContext& ctx)
 
     o.S("### Diagnosis\n\n");
     const uint64_t lost = t.HidUndelivered();
+    const uint64_t offWindow = t.HidOffWindow(), offBlocked = t.HidOffWindowBlocked();
+
+    // A touch on another window is not a loss, but in full screen TouchRate
+    // covers the display, so one there means something sits above it.
+    auto noteAbove = [&] {
+        if (!offBlocked) return;
+        o.P("%llu touch%s landed on another window while TouchRate was full screen, so\n"
+            "something sits above it there - the taskbar or an always-on-top overlay is the\n"
+            "usual one. Windows delivered %s to that window, so %s not counted as lost.\n\n",
+            (unsigned long long)offBlocked, offBlocked == 1 ? "" : "es",
+            offBlocked == 1 ? "it" : "them", offBlocked == 1 ? "it is" : "they are");
+    };
 
     if (t.HidContacts() == 0)
     {
-        if (t.HidNoTipReports() + t.HidEmptyReports() > 0 && t.TotalFrames() == 0)
+        if (offWindow == 1)
+            o.S("The one contact the panel reported started outside TouchRate's window, so it\n"
+                "could not be judged.\n\n");
+        else if (offWindow)
+            o.P("All %llu contacts the panel reported started outside TouchRate's window, so none\n"
+                "could be judged.\n\n", (unsigned long long)offWindow);
+        else if (t.HidNoTipReports() + t.HidEmptyReports() > 0 && t.TotalFrames() == 0)
             o.P("The panel sent %llu reports but never flagged a contact as touching. Whatever it\n"
                 "detected, it did not report as a touch, which points at the panel's own firmware\n"
                 "(edge or palm rejection) rather than at Windows.\n\n",
                 (unsigned long long)(t.HidNoTipReports() + t.HidEmptyReports()));
         else
             o.S("No panel contacts were recorded in this session.\n\n");
+        noteAbove();
         return;
     }
 
     if (lost == 0)
     {
-        o.P("Every one of the %llu contacts the panel reported was delivered to the app.\n\n",
-            (unsigned long long)t.HidContacts());
+        o.P("Every one of the %llu contacts that started in TouchRate's window was delivered\n"
+            "to the app.\n\n", (unsigned long long)t.HidContacts());
+        noteAbove();
         return;
     }
 
@@ -382,13 +410,16 @@ void MdDelivery(Out& o, const ExportContext& ctx)
                 withoutBlock);
         else
             o.S("All of them happened with edge-swipe blocking in effect, so Windows' edge gestures\n"
-                "are not the cause. Check for a window sitting above TouchRate along that edge -\n"
-                "the taskbar is the usual one - or a system setting that reserves the edge.\n\n");
+                "are not the cause, and each started with TouchRate's own window under the finger,\n"
+                "so no window above it took them either. Check for a system setting or a\n"
+                "background tool that reserves the edge.\n\n");
     }
     else if (mapped)
     {
         o.S("They are not concentrated at the screen edges, so edge gestures do not explain them.\n\n");
     }
+
+    noteAbove();
 
     if (t.HidMatchOffsetPx().n && t.HidMatchOffsetPx().mean > 24.0)
         o.P("Note: delivered contacts sat %.0f px from their HID-reported positions on average,\n"
@@ -858,6 +889,8 @@ static bool WriteJson(const std::wstring& path, const ExportContext& ctx)
     o.P("    \"panel_contacts\": %llu, \"delivered\": %llu, \"undelivered\": %llu,\n",
         (unsigned long long)t.HidContacts(), (unsigned long long)t.HidDelivered(),
         (unsigned long long)t.HidUndelivered());
+    o.P("    \"other_window_not_judged\": %llu, \"other_window_while_fullscreen\": %llu,\n",
+        (unsigned long long)t.HidOffWindow(), (unsigned long long)t.HidOffWindowBlocked());
     o.P("    \"edge_band_px\": %.0f,\n", kEdgeBandPx);
     {
         const WindowInfo& w = ctx.window;

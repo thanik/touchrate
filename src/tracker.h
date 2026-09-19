@@ -47,6 +47,7 @@ struct HidTrack
     bool     delivered = false;
     bool     mapped = false;
     bool     edgeSwipeBlocked = false;   // blocking was in effect when it started
+    bool     offWindow = false;          // started outside the window: not judged
     float    sx = 0, sy = 0;             // latest screen position
     float    firstX = 0, firstY = 0;
     int64_t  firstQpc = 0, lastQpc = 0, endQpc = 0;
@@ -151,6 +152,11 @@ public:
     uint64_t HidContacts()      const { return m_hidContacts; }
     uint64_t HidDelivered()     const { return m_hidDelivered; }
     uint64_t HidUndelivered()   const { return m_hidUndelivered; }
+    // Panel contacts that started on another window, the desktop, the taskbar
+    // or this window's frame. Windows rightly delivered them elsewhere, so they
+    // are counted here instead of in HidContacts().
+    uint64_t HidOffWindow()     const { return m_hidOffWindow; }
+    uint64_t HidOffWindowBlocked() const { return m_hidOffWindowBlocked; }   // with edge swipes blocked
     uint64_t UndeliveredDropped() const { return m_undeliveredDropped; }
     const Stats& HidMatchOffsetPx()    const { return m_hidMatchOffset; }
     const Stats& DeliveredEdgeDist()   const { return m_deliveredEdge; }
@@ -236,6 +242,8 @@ private:
     void MatchPointerToHid(float screenX, float screenY, int64_t hostQpc);
     void MatchHidToPointers(HidTrack& t);
     void FinalizeHidTrack(const HidTrack& t);
+    bool StartsInWindow(const HidContactSample& c, const HidReportInfo& info) const;
+    static bool HitTestClient(HWND hwnd, POINT screenPt);
     int  AssignSlot(uint32_t pointerId);
     int  FindSlot(uint32_t pointerId) const;
     void ReleaseSlot(int slot, int64_t qpc, bool genuine = true);
@@ -244,6 +252,9 @@ private:
 
     HWND  m_hwnd = nullptr;
     POINT m_clientOrigin{ 0, 0 };
+    // Where a panel contact starts is hit-tested through this, so a test can
+    // stand in for the desktop's window layout.
+    bool (*m_hitTest)(HWND hwnd, POINT screenPt) = &Tracker::HitTestClient;
     bool  m_useHistory = true;
 
     Contact m_slots[kMaxSlots];
@@ -288,6 +299,7 @@ private:
     uint64_t m_undeliveredDropped = 0;
     uint64_t m_hidFrames = 0, m_hidTouchReports = 0, m_hidNoTipReports = 0, m_hidEmptyReports = 0;
     uint64_t m_hidContacts = 0, m_hidDelivered = 0, m_hidUndelivered = 0;
+    uint64_t m_hidOffWindow = 0, m_hidOffWindowBlocked = 0;
     Stats    m_hidMatchOffset, m_deliveredEdge, m_undeliveredEdge;
     RECT     m_hidDisplay{};
     bool     m_hidHaveDisplay = false;
