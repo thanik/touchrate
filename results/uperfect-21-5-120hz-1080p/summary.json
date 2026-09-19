@@ -1,0 +1,76 @@
+{
+  "tool": "TouchRate",
+  "generated": "2026-09-17T22:12:24",
+  "qpc_frequency": 10000000,
+  "session_seconds": 274.295,
+  "touching_seconds": 260.813,
+  "devices": [
+    {"index": 0, "active": true, "name": "ACDC Touch Input Device", "manufacturer": "ACDC Co., Ltd.", "vid": 13015, "pid": 16, "vid_hex": "32D7", "pid_hex": "0010", "version": 9, "type": "Touch screen", "hid_usage_page": 13, "hid_usage": 4, "max_contacts_os": 10, "max_contacts_hid": 10, "input_report_bytes": 64, "device_extent": [53001, 30001], "display_extent": [1920, 1080], "steps_per_pixel": [27.604688, 27.778704], "path": "\\\\?\\HID#VID_32D7&PID_0010&MI_00&Col01#a&33558109&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"},
+    {"index": 1, "active": false, "name": "\\??\\VIRTUAL_DIGITIZER", "manufacturer": "", "vid": 0, "pid": 0, "vid_hex": "0000", "pid_hex": "0000", "version": 1, "type": "Touch screen", "hid_usage_page": 13, "hid_usage": 4, "max_contacts_os": 2, "max_contacts_hid": 0, "input_report_bytes": 0, "device_extent": [67733, 66675], "display_extent": [2560, 2520], "steps_per_pixel": [26.458203, 26.458333], "path": "\\\\?\\VIRTUAL_DIGITIZER"}
+  ],
+  "display": {
+    "monitor": "",
+    "gdi_device": "\\\\.\\DISPLAY2",
+    "width": 1920, "height": 1080, "dpi": 96,
+    "nominal_hz": 120.000000, "nominal_exact": true,
+    "mode_table_hz": 120,
+    "dwm_hz": 180.001800, "dwm_period_ms": 5.555500,
+    "measured_vblank_valid": true,
+    "measured_vblank_hz": 120.002123, "measured_vblank_period_ms": 8.333186, "measured_vblank_sd_ms": 0.028402, "vblanks": 32983
+  },
+  "render": {
+    "adapter": "NVIDIA GeForce RTX 5090",
+    "vsync": false, "tearing_supported": true,
+    "buffer_count": 3, "max_frame_latency": 1,
+    "frames": 918478, "fps_now": 3677.000, "fps_mean": 3350.230, "fps_1pct_low": 1944.960,
+    "frame_ms_mean": 0.298487, "frame_ms_sd": 0.083763, "frame_ms_p99": 0.514150,
+    "presents_dropped": 0
+  },
+  "touch_rate": {
+    "history_recovery": true,
+    "frames": 21307, "samples": 113127, "history_samples": 0,
+    "pointer_messages": 21434, "raw_hid_reports": 21314,
+    "modal_hz": 83.6820, "mean_hz": 81.6673, "max_gap_ms": 15.0030,
+    "interval_p50_ms": 12.041494, "interval_p90_ms": 13.056860, "interval_p99_ms": 14.031579, "interval_p999_ms": 14.094638,
+    "interval_ms": {"n": 21300, "mean": 12.244810, "sd": 0.731934, "min": 8.996900, "max": 15.003000},
+    "by_contact_count": [
+      {"contacts": 1, "modal_hz": 83.6820, "mean_hz": 85.5865, "interval_mean_ms": 11.684079, "interval_sd_ms": 0.465648, "interval_min_ms": 9.995300, "interval_max_ms": 12.036400, "max_gap_ms": 12.036400, "samples": 3414},
+      {"contacts": 2, "modal_hz": 83.6820, "mean_hz": 85.6917, "interval_mean_ms": 11.669740, "interval_sd_ms": 0.473366, "interval_min_ms": 9.997100, "interval_max_ms": 12.956100, "max_gap_ms": 12.956100, "samples": 2275},
+      {"contacts": 3, "modal_hz": 83.6820, "mean_hz": 85.5459, "interval_mean_ms": 11.689633, "interval_sd_ms": 0.469341, "interval_min_ms": 10.970300, "interval_max_ms": 13.007000, "max_gap_ms": 13.007000, "samples": 1902},
+      {"contacts": 4, "modal_hz": 82.9876, "mean_hz": 84.3831, "interval_mean_ms": 11.850710, "interval_sd_ms": 0.438417, "interval_min_ms": 10.971500, "interval_max_ms": 13.011200, "max_gap_ms": 13.011200, "samples": 2119},
+      {"contacts": 5, "modal_hz": 83.6820, "mean_hz": 83.1303, "interval_mean_ms": 12.029304, "interval_sd_ms": 0.444922, "interval_min_ms": 10.001800, "interval_max_ms": 14.008000, "max_gap_ms": 14.008000, "samples": 2375},
+      {"contacts": 6, "modal_hz": 83.6820, "mean_hz": 82.2016, "interval_mean_ms": 12.165213, "interval_sd_ms": 0.383153, "interval_min_ms": 10.997800, "interval_max_ms": 14.002200, "max_gap_ms": 14.002200, "samples": 1397},
+      {"contacts": 7, "modal_hz": 76.6284, "mean_hz": 79.4050, "interval_mean_ms": 12.593658, "interval_sd_ms": 0.536485, "interval_min_ms": 9.995600, "interval_max_ms": 14.021000, "max_gap_ms": 14.021000, "samples": 1130},
+      {"contacts": 8, "modal_hz": 77.2201, "mean_hz": 77.6544, "interval_mean_ms": 12.877563, "interval_sd_ms": 0.472587, "interval_min_ms": 8.996900, "interval_max_ms": 14.029900, "max_gap_ms": 14.029900, "samples": 1259},
+      {"contacts": 9, "modal_hz": 77.2201, "mean_hz": 77.0461, "interval_mean_ms": 12.979250, "interval_sd_ms": 0.368133, "interval_min_ms": 9.000700, "interval_max_ms": 15.002400, "max_gap_ms": 15.002400, "samples": 1560},
+      {"contacts": 10, "modal_hz": 77.2201, "mean_hz": 76.1985, "interval_mean_ms": 13.123621, "interval_sd_ms": 0.363663, "interval_min_ms": 9.993700, "interval_max_ms": 15.003000, "max_gap_ms": 15.003000, "samples": 3869}
+    ]
+  },
+  "latency": {
+    "p50_ms": 0.255184, "p90_ms": 0.395640, "p99_ms": 0.589399, "p999_ms": 2.389577,
+    "device_to_app_ms": {"n": 113127, "mean": 0.261417, "sd": 0.157933, "min": 0.061600, "max": 4.230100}
+  },
+  "multitouch": {
+    "max_simultaneous": 10,
+    "counts_reached": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    "downs": 583, "ups": 583, "watchdog_released": 0,
+    "tap_interval_ms": {"n": 525, "mean": 501.648421, "sd": 1732.228155, "min": 11.010500, "max": 30284.583300},
+    "dwell_ms": {"n": 583, "mean": 2430.561911, "sd": 6211.924246, "min": 11.994400, "max": 78967.929800}
+  },
+  "position_processing": {
+    "processed_minus_raw_px": {"n": 113127, "mean": 0.000000, "sd": 0.000000, "min": 0.000000, "max": 0.000000}
+  },
+  "delivery": {
+    "hid_reports": 21314, "hid_frames": 21314,
+    "hid_touch_reports": 21300, "hid_no_tip_reports": 7, "hid_empty_reports": 7,
+    "panel_contacts": 583, "delivered": 583, "undelivered": 0,
+    "edge_band_px": 50,
+    "window": {"left": 0, "top": 0, "width": 1920, "height": 1080, "fullscreen": true, "edge_swipe_blocked": true},
+    "hid_descriptor": {"contact_slots": 10, "contact_count": true, "contact_id": true, "tip_switch": true, "confidence": false, "x_min": 0, "x_max": 32767, "y_min": 0, "y_max": 32767, "report_id": 84},
+    "match_offset_px": {"n": 583, "mean": 19.311098, "sd": 32.551171, "min": 0.021886, "max": 95.682741},
+    "delivered_edge_distance_px": {"n": 583, "mean": 264.112765, "sd": 130.703134, "min": 0.000000, "max": 539.093628},
+    "undelivered_edge_distance_px": {"n": 0}
+  },
+  "exported_sample_rows": 113127,
+  "samples_dropped_from_ring": 0
+}
