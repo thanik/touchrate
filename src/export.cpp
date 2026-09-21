@@ -379,22 +379,31 @@ bool ScreenDescriptor(const ExportContext& ctx, HidDescriptorInfo& di)
 // The same rates, measured from the centre of the interval peak. A digitizer
 // whose reports land on a coarse tick alternates between two intervals and the
 // tallest step alone names neither.
-void MdPeakRate(Out& o, const Tracker& t, const char* heading)
+void MdPeakRate(Out& o, const Tracker& t, const char* heading, bool explained = false)
 {
     o.P("%s\n\n", heading);
-    o.S("The rates above are the most common gap between reports, which is how every panel\n"
-        "here is measured, so they stay comparable. That works for a digitizer that spaces\n"
-        "its reports evenly. Not all of them do: one that times its reports in whole\n"
-        "milliseconds cannot send a report every 10.47 ms, so it alternates — 10 ms, then\n"
-        "11, then 10 again. That is 95.5 reports a second, but the most common gap is\n"
-        "10 ms, and going by that alone would call it 100 Hz, a rate it never delivers.\n\n");
-    o.S("Below are the same measurements averaged over the gaps that belong together — the\n"
-        "most common one and its neighbours — rather than taken from the most common alone.\n"
-        "A missed report leaves a gap of twice the interval or more, far from the rest, and\n"
-        "stays out of that average, so this is not the plain mean either.\n\n");
-    o.S("The `all` row covers every contact count together. On a panel whose rate falls as\n"
-        "fingers are added, that mixes several rates into one figure and the per-count rows\n"
-        "are what to read.\n\n");
+    // The second input in one report only points at the explanation the first
+    // already gave, rather than repeating it.
+    if (explained)
+    {
+        o.S("Measured as in [Report rate, peak-centred](#report-rate-peak-centred) above.\n\n");
+    }
+    else
+    {
+        o.S("The rates above are the most common gap between reports, which is how every panel\n"
+            "here is measured, so they stay comparable. That works for a digitizer that spaces\n"
+            "its reports evenly. Not all of them do: one that times its reports in whole\n"
+            "milliseconds cannot send a report every 10.47 ms, so it alternates — 10 ms, then\n"
+            "11, then 10 again. That is 95.5 reports a second, but the most common gap is\n"
+            "10 ms, and going by that alone would call it 100 Hz, a rate it never delivers.\n\n");
+        o.S("Below are the same measurements averaged over the gaps that belong together — the\n"
+            "most common one and its neighbours — rather than taken from the most common alone.\n"
+            "A missed report leaves a gap of twice the interval or more, far from the rest, and\n"
+            "stays out of that average, so this is not the plain mean either.\n\n");
+        o.S("The `all` row covers every contact count together. On a panel whose rate falls as\n"
+            "fingers are added, that mixes several rates into one figure and the per-count rows\n"
+            "are what to read.\n\n");
+    }
     if (t.ClockResolutionMs() > 0.5)
         o.P("This device times its own reports in %g ms units, so the figures above already use\n"
             "the averaged rate and the two columns agree.\n\n", t.ClockResolutionMs());
@@ -425,6 +434,9 @@ void MdRateBullets(Out& o, const Tracker& t)
     const double modeMs = mode > 0 ? 1000.0 / mode : 0;
     const double sd = t.IntervalMs().Sd();
     const double p999 = ih.Percentile(0.999);
+    // Jitter and gaps are judged against the period the device actually
+    // delivers, which on an unevenly spaced one is not the most common gap.
+    const double periodMs = t.PeakHz() > 0 ? 1000.0 / t.PeakHz() : modeMs;
 
     o.P("- Modal report rate is **%.0f Hz** (%.2f ms per report).\n", mode, modeMs);
     if (mode > 0 && std::fabs(t.PeakHz() / mode - 1.0) > 0.02)
@@ -433,15 +445,15 @@ void MdRateBullets(Out& o, const Tracker& t)
             "  peak-centred section gives that figure at each contact count.\n",
             t.PeakHz(), t.PeakHz() > 0 ? 1000.0 / t.PeakHz() : 0.0);
     o.P("- Interval jitter is %s: sd %.2f ms against a %.2f ms period.\n",
-        sd > modeMs * 0.25 ? "**high**" : "low", sd, modeMs);
-    if (modeMs > 0 && p999 > modeMs * 3.0)
+        sd > periodMs * 0.25 ? "**high**" : "low", sd, periodMs);
+    if (periodMs > 0 && p999 > periodMs * 3.0)
         o.P("- Tail stalls present: 1 report in 1000 arrives %.1f ms late or worse.\n", p999);
-    if (modeMs > 0 && t.MaxGapMs() > modeMs * 2.5 && t.MaxGapMs() > 25.0)
+    if (periodMs > 0 && t.MaxGapMs() > periodMs * 2.5 && t.MaxGapMs() > 25.0)
         o.P("- Worst gap %.1f ms is %.1f× the normal period: at least one report was missed.\n",
-            t.MaxGapMs(), t.MaxGapMs() / modeMs);
-    else if (modeMs > 0)
+            t.MaxGapMs(), t.MaxGapMs() / periodMs);
+    else if (periodMs > 0)
         o.P("- Worst gap %.1f ms stayed within %.1f× the normal period; no report was dropped.\n",
-            t.MaxGapMs(), t.MaxGapMs() / modeMs);
+            t.MaxGapMs(), t.MaxGapMs() / periodMs);
 
     int worstN = 0; double worstHz = 1e9, bestHz = 0;
     for (int n = 1; n <= kMaxSlots; ++n)
@@ -509,7 +521,7 @@ const char* PadTiming(const TouchPadInput& in, char* buf, size_t n)
 }
 
 // Everything measured from the touch pad, kept apart from the touch screen.
-void MdPad(Out& o, const ExportContext& ctx)
+void MdPad(Out& o, const ExportContext& ctx, bool explained)
 {
     const Tracker& p = *ctx.pad;
     const TouchPadInput& in = *ctx.padIn;
@@ -579,7 +591,7 @@ void MdPad(Out& o, const ExportContext& ctx)
             "worst gap include up to one step of rounding.\n\n",
             in.ClockStepMs(), p.ModeHz() > 0 ? 1000.0 / p.ModeHz() : 0.0);
 
-    if (p.IntervalMs().n) MdPeakRate(o, p, "### Touch pad report rate, peak-centred");
+    if (p.IntervalMs().n) MdPeakRate(o, p, "### Touch pad report rate, peak-centred", explained);
 
     o.S("### Touch pad report timing\n\n");
     o.S("| Metric | Value |\n| --- | --- |\n");
@@ -1094,7 +1106,7 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
     if (screenData || !padData)
         MdScreen(o, ctx, dev, padData);
     if (padData)
-        MdPad(o, ctx);
+        MdPad(o, ctx, (screenData || !padData) && t.IntervalMs().n > 0);
 
     // ---- display and rendering
     o.S("## Display and rendering\n\n| Property | Value |\n| --- | --- |\n");
@@ -1220,7 +1232,9 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
     if (PadMeasured(ctx))
         o.S("`touchpad_samples.csv.gz` has one row per finger per pad frame; `x` and `y` are in\n"
             "the pad's own units. `device_ms` runs on the pad's scan-time clock, re-anchored to\n"
-            "the host clock at the start of each touch, and `host_ms` is when the report arrived.\n\n");
+            "the host clock at the start of each touch, and `host_ms` is when the report arrived.\n"
+            "A contact the pad simply stops reporting, rather than reporting as lifted, counts in\n"
+            "the ups above but has no `up` row of its own.\n\n");
     o.P("---\n\nGenerated by TouchRate. QPC frequency %lld Hz.\n", (long long)QpcFreq());
     return true;
 }
