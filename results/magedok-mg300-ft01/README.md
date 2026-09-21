@@ -1,23 +1,23 @@
-# TouchRate measurement — 2026-09-21T23:10:38
+# TouchRate measurement — 2026-09-22T00:41:38
 
 **Touch screen:** TouchScreen — `VID_056A  PID_8191` — WingCool Inc.  
-**Display:** MG300-FT01 — 1920 × 1080 @ 239.999 Hz nominal, 239.993 Hz measured  
-**Session:** 237.0 s, of which 179.0 s with at least one contact
+**Display:** MG300-FT01 — 1920 × 1080 @ 239.999 Hz nominal, 239.987 Hz measured  
+**Session:** 214.1 s, of which 195.2 s with at least one contact
 
 ## Headline
 
 | Metric | Value |
 | --- | --- |
 | Modal report rate | **100.5 Hz** |
-| Peak-centred rate | **95.5 Hz** — the centre of the interval peak; see [Report rate, peak-centred](#report-rate-peak-centred) |
-| Mean report rate | 95.4 Hz |
+| Peak-centred rate | **95.5 Hz** — its reports are not evenly spaced; see [Report rate, peak-centred](#report-rate-peak-centred) |
+| Mean report rate | 95.5 Hz |
 | Rate at 1 contact | 99.5 Hz |
 | Rate at 10 contacts | 100.5 Hz |
-| Interval jitter (sd) | 0.529 ms |
-| Worst gap | 21.03 ms |
-| Delivery latency p50 / p99 | 1.21 / 1.58 ms |
+| Interval jitter (sd) | 0.514 ms |
+| Worst gap | 21.02 ms |
+| Delivery latency p50 / p99 | 1.17 / 1.57 ms |
 | Max simultaneous contacts | 10 |
-| Render frame rate | 3400 fps mean |
+| Render frame rate | 3333 fps mean |
 
 ## Report rate by contact count
 
@@ -26,32 +26,32 @@ the intervals measured while exactly that many contacts were down.
 
 | Contacts | Modal Hz | Mean Hz | Interval ms | Jitter sd ms | Worst gap ms | Intervals | % of 1 contact |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 99.5 | 95.1 | 10.520 | 0.828 | 21.03 | 975 | 100.0% |
-| 2 | 100.5 | 95.5 | 10.471 | 0.506 | 12.00 | 1532 | 101.0% |
-| 3 | 99.5 | 95.5 | 10.475 | 0.508 | 12.03 | 1122 | 100.0% |
-| 4 | 100.5 | 95.5 | 10.477 | 0.501 | 11.09 | 688 | 101.0% |
-| 5 | 99.5 | 95.5 | 10.471 | 0.515 | 11.99 | 1113 | 100.0% |
-| 6 | 100.5 | 95.5 | 10.473 | 0.504 | 11.99 | 1083 | 101.0% |
-| 7 | 99.5 | 95.5 | 10.476 | 0.501 | 12.04 | 2230 | 100.0% |
-| 8 | 100.5 | 95.4 | 10.477 | 0.505 | 12.00 | 2476 | 101.0% |
-| 9 | 100.5 | 95.4 | 10.478 | 0.505 | 12.03 | 2065 | 101.0% |
-| 10 | 100.5 | 95.5 | 10.471 | 0.504 | 11.13 | 3797 | 101.0% |
+| 1 | 99.5 | 95.3 | 10.490 | 0.586 | 21.02 | 1364 | 100.0% |
+| 2 | 100.5 | 95.5 | 10.474 | 0.502 | 12.00 | 2147 | 101.0% |
+| 3 | 100.5 | 95.5 | 10.475 | 0.502 | 11.11 | 1598 | 101.0% |
+| 4 | 100.5 | 95.5 | 10.476 | 0.504 | 11.12 | 1668 | 101.0% |
+| 5 | 100.5 | 95.5 | 10.475 | 0.502 | 11.99 | 2302 | 101.0% |
+| 6 | 99.5 | 95.5 | 10.477 | 0.504 | 12.00 | 1225 | 100.0% |
+| 7 | 100.5 | 95.5 | 10.477 | 0.501 | 11.12 | 1235 | 101.0% |
+| 8 | 99.5 | 95.5 | 10.474 | 0.513 | 11.98 | 1101 | 100.0% |
+| 9 | 100.5 | 95.4 | 10.483 | 0.509 | 12.11 | 1975 | 101.0% |
+| 10 | 100.5 | 95.5 | 10.469 | 0.519 | 13.00 | 4020 | 101.0% |
 
 Best **100.5 Hz** at 2 contacts, worst **99.5 Hz** at 1 contact — a **1% drop**.
 
 ## Report rate, peak-centred
 
-The rates above are the most common interval — the tallest step of the interval
-histogram — which is how every panel here is measured, so they stay comparable.
-That describes a digitizer reporting at one steady interval. One whose reports
-land on a coarse tick instead alternates between two: on a 1 ms tick, 95.5
-reports a second come out as a mix of 10 ms and 11 ms intervals, and the tallest
-step names 100 Hz, a rate the panel never delivers.
+The rates above are the most common gap between reports, which is how every panel
+here is measured, so they stay comparable. That works for a digitizer that spaces
+its reports evenly. Not all of them do: one that times its reports in whole
+milliseconds cannot send a report every 10.47 ms, so it alternates — 10 ms, then
+11, then 10 again. That is 95.5 reports a second, but the most common gap is
+10 ms, and going by that alone would call it 100 Hz, a rate it never delivers.
 
-Below are the same measurements taken from the centre of the interval peak: the
-tallest step together with the neighbouring steps belonging to it, weighted by how
-many intervals fell in each. A missed report sits a whole interval further out and
-stays excluded, so this is not the plain mean.
+Below are the same measurements averaged over the gaps that belong together — the
+most common one and its neighbours — rather than taken from the most common alone.
+A missed report leaves a gap of twice the interval or more, far from the rest, and
+stays out of that average, so this is not the plain mean either.
 
 The `all` row covers every contact count together. On a panel whose rate falls as
 fingers are added, that mixes several rates into one figure and the per-count rows
@@ -59,16 +59,16 @@ are what to read.
 
 | Contacts | Modal Hz | Peak-centred Hz | Mean Hz | Peak vs modal |
 | ---: | ---: | ---: | ---: | ---: |
-| all | 100.5 | **95.5** | 95.4 | -5.0% |
-| 1 | 99.5 | **95.4** | 95.1 | -4.1% |
+| all | 100.5 | **95.5** | 95.5 | -5.0% |
+| 1 | 99.5 | **95.4** | 95.3 | -4.1% |
 | 2 | 100.5 | **95.5** | 95.5 | -5.0% |
-| 3 | 99.5 | **95.5** | 95.5 | -4.1% |
+| 3 | 100.5 | **95.5** | 95.5 | -5.0% |
 | 4 | 100.5 | **95.5** | 95.5 | -5.0% |
-| 5 | 99.5 | **95.5** | 95.5 | -4.0% |
-| 6 | 100.5 | **95.5** | 95.5 | -5.0% |
-| 7 | 99.5 | **95.5** | 95.5 | -4.1% |
-| 8 | 100.5 | **95.4** | 95.4 | -5.0% |
-| 9 | 100.5 | **95.4** | 95.4 | -5.0% |
+| 5 | 100.5 | **95.5** | 95.5 | -5.0% |
+| 6 | 99.5 | **95.5** | 95.5 | -4.1% |
+| 7 | 100.5 | **95.5** | 95.5 | -5.0% |
+| 8 | 99.5 | **95.5** | 95.5 | -4.0% |
+| 9 | 100.5 | **95.4** | 95.4 | -5.1% |
 | 10 | 100.5 | **95.5** | 95.5 | -5.0% |
 
 ## Report timing
@@ -77,14 +77,14 @@ History recovery was **on, so coalesced frames were recovered**.
 
 | Metric | Value |
 | --- | --- |
-| Input frames | 17088 |
-| Samples | 114200 (0 recovered from history) |
-| Pointer messages | 17110 |
-| Raw HID reports | 28750 |
-| Reports per scan | 28750 reports for 17095 scans, 11655 of them continuations |
-| Interval mean / sd | 10.4768 / 0.5287 ms |
-| Interval min / max | 7.9817 / 21.0347 ms |
-| Interval p50 / p90 / p99 / p99.9 | 10.091 / 11.059 / 11.097 / 11.927 ms |
+| Input frames | 18639 |
+| Samples | 111419 (0 recovered from history) |
+| Pointer messages | 18665 |
+| Raw HID reports | 28202 |
+| Reports per scan | 28202 reports for 18643 scans, 9559 of them continuations |
+| Interval mean / sd | 10.4757 / 0.5137 ms |
+| Interval min / max | 2.9996 / 21.0188 ms |
+| Interval p50 / p90 / p99 / p99.9 | 10.091 / 11.058 / 11.097 / 11.191 ms |
 
 **This panel splits one scan across several HID reports.** Its report carries 5 contact slots and it has declared up to 10 contacts in one scan,
 so the rest follow in continuation reports — HID hybrid mode. Windows assembles them
@@ -105,20 +105,20 @@ desktop, the taskbar or TouchRate's title bar went there, and is counted separat
 
 | Metric | Value |
 | --- | --- |
-| Panel contacts judged (TipSwitch set, started in the window) | 49 |
-| Delivered to the app | 49 |
+| Panel contacts judged (TipSwitch set, started in the window) | 64 |
+| Delivered to the app | 64 |
 | **Not delivered** | **0** |
 | Started on another window, not judged | 0 |
-| HID reports: touching / not touching / empty | 28736 / 14 / 0 |
-| HID frames / pointer input frames | 17095 / 17088 |
+| HID reports: touching / not touching / empty | 28189 / 13 / 0 |
+| HID frames / pointer input frames | 18643 / 18639 |
 | Window at export | 1920 × 1080 at (0, 0), full screen |
 | Edge-swipe blocking at export | in effect |
-| Position mapping check | 18.8 px mean offset across 49 matched samples |
+| Position mapping check | 13.0 px mean offset across 64 matched samples |
 | HID descriptor | 5 contact slots; TipSwitch yes; Confidence no; X 0..16383, Y 0..9599 |
 
 ### Diagnosis
 
-Every one of the 49 contacts that started in TouchRate's window was delivered
+Every one of the 64 contacts that started in TouchRate's window was delivered
 to the app.
 
 ## Input delivery latency
@@ -129,9 +129,9 @@ display processing, so it is a floor for end-to-end latency, not a measurement o
 
 | Metric | n | Mean | SD | Min | Max |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| device → app (ms) | 114200 | 1.106 | 0.379 | 0.069 | 5.494 |
+| device → app (ms) | 111419 | 0.985 | 0.469 | 0.063 | 5.253 |
 
-Percentiles: p50 1.207, p90 1.377, p99 1.577, p99.9 3.097 ms
+Percentiles: p50 1.167, p90 1.371, p99 1.570, p99.9 3.233 ms
 
 ## Multi-touch
 
@@ -139,12 +139,12 @@ Maximum simultaneous contacts observed: **10** of 15 the hardware reports
 
 Contact counts reached: 1✓ 2✓ 3✓ 4✓ 5✓ 6✓ 7✓ 8✓ 9✓ 10✓
 
-Touch downs / ups: 49 / 49
+Touch downs / ups: 64 / 64
 
 | Metric | n | Mean | SD | Min | Max |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| interval between downs (ms) | 44 | 4385.51 | 4942.76 | 11.08 | 21559.62 |
-| contact dwell, down→up (ms) | 49 | 24402.86 | 24630.07 | 20.01 | 97214.08 |
+| interval between downs (ms) | 44 | 4514.00 | 4726.55 | 12.00 | 17316.69 |
+| contact dwell, down→up (ms) | 64 | 18226.02 | 27871.42 | 9.00 | 122522.60 |
 
 ## OS position processing
 
@@ -153,7 +153,7 @@ the digitizer. A non-zero mean means the OS is smoothing or predicting.
 
 | Metric | n | Mean | SD | Min | Max |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| \|processed − raw\| (px) | 114200 | 0.000 | 0.000 | 0.000 | 0.000 |
+| \|processed − raw\| (px) | 111419 | 0.000 | 0.000 | 0.000 | 0.000 |
 
 Observed himetric range: x 21..21688, y 1..9059 (0.01 mm units).
 
@@ -166,25 +166,25 @@ Observed himetric range: x 21..21688, y 1..9059 (0.01 mm units).
 | Mode | 1920 × 1080, 32 bpp, DPI 96 (1.00× scale) |
 | Nominal refresh | 239.9990 Hz (exact signal timing) |
 | DWM composition | 239.9981 Hz (desktop-wide, not this monitor) |
-| Measured vblank | 239.9925 Hz (4.1668 ms period, sd 0.0250 ms, 56998 vblanks) |
+| Measured vblank | 239.9866 Hz (4.1669 ms period, sd 0.0172 ms, 51503 vblanks) |
 | Adapter | NVIDIA GeForce RTX 5090 |
 | Swap chain | flip-discard, 3 buffers, max frame latency 1 |
 | Present mode | immediate (sync interval 0) + allow-tearing |
-| Frames rendered | 805047 |
-| Frame rate | 3399.7 fps mean, 1946.1 fps 1% low |
-| Frame time | mean 0.294 ms, sd 0.545 ms, p99 0.514 ms |
+| Frames rendered | 712953 |
+| Frame rate | 3332.8 fps mean, 1926.5 fps 1% low |
+| Frame time | mean 0.300 ms, sd 0.085 ms, p99 0.519 ms |
 | Presents dropped | n/a in immediate mode |
 
 ## Observations
 
 - Modal report rate is **101 Hz** (9.95 ms per report).
-- Its intervals do not sit on one step. Measured from the centre of the interval
-  peak the rate is **95 Hz** (10.47 ms per report); see the peak-centred section for
-  what that means and for the figure at each contact count.
-- Interval jitter is low: sd 0.53 ms against a 9.95 ms period.
-- Worst gap 21.0 ms stayed within 2.1× the normal period; no report was dropped.
+- Its reports are not evenly spaced, so the most common gap is not the rate it
+  delivers: averaged over the gaps it is **95 Hz** (10.48 ms per report). The
+  peak-centred section gives that figure at each contact count.
+- Interval jitter is low: sd 0.51 ms against a 10.48 ms period.
+- Worst gap 21.0 ms stayed within 2.0× the normal period; no report was dropped.
 - Report rate holds within 1% across the contact counts measured.
-- Median delivery latency 1.21 ms, p99 1.58 ms.
+- Median delivery latency 1.17 ms, p99 1.57 ms.
 - The OS applies no measurable smoothing or prediction to reported positions.
 
 Thresholds above are this tool's reporting conventions, not a standard.
