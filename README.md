@@ -96,6 +96,8 @@ message — the difference between the two is how much a slow app would lose.
 Reported alongside it:
 
 - **modal rate** — the most common interval, i.e. the device's nominal rate
+- **peak-centred rate** — the same intervals measured from the centre of the
+  peak (see below), reported in its own section
 - **mean rate** — 1 / mean interval, which drops if the device stalls
 - **jitter (sd)** — the number that matters most for rhythm games; a steady
   100 Hz beats an erratic 200 Hz
@@ -106,6 +108,23 @@ Reported alongside it:
 Intervals are only measured while the screen is continuously touched. The pause
 between two separate touches is the user's, not the digitizer's, and is never
 counted as a gap.
+
+### Peak-centred rate
+
+The modal rate describes a digitizer that spaces its reports evenly. Not all of
+them do. A panel that times its reports in whole milliseconds cannot send one
+every 10.47 ms, so it alternates: 10 ms, then 11, then 10 again. That is 95.5
+reports a second, but the most common gap is 10 ms and the modal rate calls it
+100 Hz — a rate the panel never delivers.
+
+So every export also carries a **Report rate, peak-centred** section, which
+averages the gaps that belong together — the most common one and its
+neighbours — instead of taking only the most common. A missed report leaves a
+gap of twice the interval or more, far from the rest, and stays out of that
+average, so this is not the plain mean either. The headline and the
+rate-by-contact-count table keep the modal figure, so every panel measured
+stays comparable; the peak-centred section reports both side by side, per
+contact count, with the difference between them.
 
 ### Report rate by contact count
 
@@ -131,6 +150,17 @@ panel, whose full export is in this repo:
 Press one finger, then two, and so on up to ten, holding each for a few seconds
 so every row gets enough intervals — the `samples` column tells you which rows
 are well supported.
+
+### Panels that split a scan across reports
+
+A panel that tracks more contacts than its HID report has slots sends the rest
+in continuation reports — HID hybrid mode — so ten fingers can arrive as two
+five-contact reports. TouchRate reassembles them into the scan they belong to,
+and counts scans rather than reports, so its rate stays comparable with a panel
+that fits every contact into one report. The export says so when it happens,
+with the report count, the scan count and how many reports were continuations,
+and the panel's contact capacity is taken as the larger of what the device
+declares and the slots in its report.
 
 ### Touch delivery
 

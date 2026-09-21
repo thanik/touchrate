@@ -170,6 +170,9 @@ public:
     uint64_t HidContacts()      const { return m_hidContacts; }
     uint64_t HidDelivered()     const { return m_hidDelivered; }
     uint64_t HidUndelivered()   const { return m_hidUndelivered; }
+    // Reports that carried the rest of a scan the previous report began.
+    uint64_t HidSplitReports()  const { return m_hidSplitReports; }
+    uint32_t HidMaxContactCount() const { return m_hidMaxContactCount; }
     // Panel contacts that started on another window, the desktop, the taskbar
     // or this window's frame. Windows rightly delivered them elsewhere, so they
     // are counted here instead of in HidContacts().
@@ -197,6 +200,12 @@ public:
     double MaxGapMs() const { return m_maxGapMs; }
     double AvgHz()    const { return m_intervalMs.n && m_intervalMs.mean > 0 ? 1000.0 / m_intervalMs.mean : 0.0; }
     double ModeHz()   const;
+    // The centre of the interval peak, which covers a digitizer that
+    // alternates between two intervals because its reports land on a coarse
+    // tick. ModeHz stays the tallest step, comparable across every panel
+    // measured; this is the rate such a panel actually delivers.
+    double PeakHz()   const;
+    double PeakHzAt(int contacts) const;
 
     // Resolution of the clock the intervals are timed on, when it is coarser
     // than the histogram: a touch pad's scan time may count whole milliseconds.
@@ -330,6 +339,8 @@ private:
     uint64_t m_undeliveredDropped = 0;
     uint64_t m_hidFrames = 0, m_hidTouchReports = 0, m_hidNoTipReports = 0, m_hidEmptyReports = 0;
     uint64_t m_hidContacts = 0, m_hidDelivered = 0, m_hidUndelivered = 0;
+    uint64_t m_hidSplitReports = 0;
+    uint32_t m_hidMaxContactCount = 0;
     uint64_t m_hidOffWindow = 0, m_hidOffWindowBlocked = 0;
     Stats    m_hidMatchOffset, m_deliveredEdge, m_undeliveredEdge;
     RECT     m_hidDisplay{};

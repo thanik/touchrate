@@ -363,6 +363,60 @@ void MdRateByCount(Out& o, const Tracker& t)
             bestHz > 0 ? (1.0 - worstHz / bestHz) * 100.0 : 0.0);
 }
 
+// The touch screen's HID descriptor: the device that reported, or failing
+// that the active digitizer - never the touch pad, which has its own section.
+bool ScreenDescriptor(const ExportContext& ctx, HidDescriptorInfo& di)
+{
+    if (!ctx.hid) return false;
+    if (ctx.hid->LastScreenDevice() && ctx.hid->Describe(ctx.hid->LastScreenDevice(), di)) return true;
+    if (!ctx.devices || ctx.devices->empty()) return false;
+    const size_t idx = ctx.activeDevice >= 0 ? (size_t)ctx.activeDevice : 0;
+    if (idx >= ctx.devices->size()) return false;
+    const TouchDevice& d = (*ctx.devices)[idx];
+    return d.rawHandle && d.usage != 0x05 && ctx.hid->Describe(d.rawHandle, di);
+}
+
+// The same rates, measured from the centre of the interval peak. A digitizer
+// whose reports land on a coarse tick alternates between two intervals and the
+// tallest step alone names neither.
+void MdPeakRate(Out& o, const Tracker& t, const char* heading)
+{
+    o.P("%s\n\n", heading);
+    o.S("The rates above are the most common gap between reports, which is how every panel\n"
+        "here is measured, so they stay comparable. That works for a digitizer that spaces\n"
+        "its reports evenly. Not all of them do: one that times its reports in whole\n"
+        "milliseconds cannot send a report every 10.47 ms, so it alternates — 10 ms, then\n"
+        "11, then 10 again. That is 95.5 reports a second, but the most common gap is\n"
+        "10 ms, and going by that alone would call it 100 Hz, a rate it never delivers.\n\n");
+    o.S("Below are the same measurements averaged over the gaps that belong together — the\n"
+        "most common one and its neighbours — rather than taken from the most common alone.\n"
+        "A missed report leaves a gap of twice the interval or more, far from the rest, and\n"
+        "stays out of that average, so this is not the plain mean either.\n\n");
+    o.S("The `all` row covers every contact count together. On a panel whose rate falls as\n"
+        "fingers are added, that mixes several rates into one figure and the per-count rows\n"
+        "are what to read.\n\n");
+    if (t.ClockResolutionMs() > 0.5)
+        o.P("This device times its own reports in %g ms units, so the figures above already use\n"
+            "the averaged rate and the two columns agree.\n\n", t.ClockResolutionMs());
+
+    o.S("| Contacts | Modal Hz | Peak-centred Hz | Mean Hz | Peak vs modal |\n");
+    o.S("| ---: | ---: | ---: | ---: | ---: |\n");
+    auto row = [&](const char* label, double modal, double peak, double mean) {
+        o.P("| %s | %.1f | **%.1f** | %.1f | ", label, modal, peak, mean);
+        if (modal > 0) o.P("%+.1f%% |\n", (peak / modal - 1.0) * 100.0);
+        else           o.S("- |\n");
+    };
+    row("all", t.ModeHz(), t.PeakHz(), t.AvgHz());
+    for (int n = 1; n <= kMaxSlots; ++n)
+    {
+        if (!t.HasDataAt(n)) continue;
+        char lab[16];
+        snprintf(lab, sizeof lab, "%d", n);
+        row(lab, t.ModeHzAt(n), t.PeakHzAt(n), t.MeanHzAt(n));
+    }
+    o.S("\n");
+}
+
 // The timing observations both inputs share. Needs interval data.
 void MdRateBullets(Out& o, const Tracker& t)
 {
@@ -373,6 +427,11 @@ void MdRateBullets(Out& o, const Tracker& t)
     const double p999 = ih.Percentile(0.999);
 
     o.P("- Modal report rate is **%.0f Hz** (%.2f ms per report).\n", mode, modeMs);
+    if (mode > 0 && std::fabs(t.PeakHz() / mode - 1.0) > 0.02)
+        o.P("- Its reports are not evenly spaced, so the most common gap is not the rate it\n"
+            "  delivers: averaged over the gaps it is **%.0f Hz** (%.2f ms per report). The\n"
+            "  peak-centred section gives that figure at each contact count.\n",
+            t.PeakHz(), t.PeakHz() > 0 ? 1000.0 / t.PeakHz() : 0.0);
     o.P("- Interval jitter is %s: sd %.2f ms against a %.2f ms period.\n",
         sd > modeMs * 0.25 ? "**high**" : "low", sd, modeMs);
     if (modeMs > 0 && p999 > modeMs * 3.0)
@@ -520,6 +579,8 @@ void MdPad(Out& o, const ExportContext& ctx)
             "worst gap include up to one step of rounding.\n\n",
             in.ClockStepMs(), p.ModeHz() > 0 ? 1000.0 / p.ModeHz() : 0.0);
 
+    if (p.IntervalMs().n) MdPeakRate(o, p, "### Touch pad report rate, peak-centred");
+
     o.S("### Touch pad report timing\n\n");
     o.S("| Metric | Value |\n| --- | --- |\n");
     o.P("| Samples | %llu |\n", (unsigned long long)p.TotalSamples());
@@ -601,18 +662,7 @@ void MdDelivery(Out& o, const ExportContext& ctx)
     // Describe the device that reported, or failing that the active digitizer,
     // so what the panel can express is on record even without touch data.
     HidDescriptorInfo di;
-    bool haveDesc = false;
-    if (ctx.hid)
-    {
-        if (ctx.hid->LastScreenDevice()) haveDesc = ctx.hid->Describe(ctx.hid->LastScreenDevice(), di);
-        if (!haveDesc && ctx.devices && !ctx.devices->empty())
-        {
-            const size_t idx = ctx.activeDevice >= 0 ? (size_t)ctx.activeDevice : 0;
-            // Never the touch pad: this section is about the touch screen.
-            if (idx < ctx.devices->size() && (*ctx.devices)[idx].rawHandle && (*ctx.devices)[idx].usage != 0x05)
-                haveDesc = ctx.hid->Describe((*ctx.devices)[idx].rawHandle, di);
-        }
-    }
+    const bool haveDesc = ScreenDescriptor(ctx, di);
     const WindowInfo& w = ctx.window;
 
     if (!t.HidSeen())
@@ -855,6 +905,9 @@ static void MdScreen(Out& o, const ExportContext& ctx, const TouchDevice* dev, b
             "[Touch pad](#touch-pad).\n\n");
     o.S("| Metric | Value |\n| --- | --- |\n");
     o.P("| Modal report rate | **%.1f Hz** |\n", t.ModeHz());
+    if (t.ModeHz() > 0 && std::fabs(t.PeakHz() / t.ModeHz() - 1.0) > 0.02)
+        o.P("| Peak-centred rate | **%.1f Hz** — its reports are not evenly spaced; see [Report rate, peak-centred](#report-rate-peak-centred) |\n",
+            t.PeakHz());
     o.P("| Mean report rate | %.1f Hz |\n", t.AvgHz());
     if (t.HasDataAt(1)) o.P("| Rate at 1 contact | %.1f Hz |\n", t.ModeHzAt(1));
     if (t.MaxSimultaneous() > 1 && t.HasDataAt(t.MaxSimultaneous()))
@@ -880,6 +933,8 @@ static void MdScreen(Out& o, const ExportContext& ctx, const TouchDevice* dev, b
         "the intervals measured while exactly that many contacts were down.\n\n");
     MdRateByCount(o, t);
 
+    if (t.IntervalMs().n) MdPeakRate(o, t, "## Report rate, peak-centred");
+
     // ---- report timing
     o.S("## Report timing\n\n");
     o.P("History recovery was **%s**.\n\n",
@@ -891,7 +946,13 @@ static void MdScreen(Out& o, const ExportContext& ctx, const TouchDevice* dev, b
         (unsigned long long)t.TotalSamples(), (unsigned long long)t.HistorySamples());
     o.P("| Pointer messages | %llu |\n", (unsigned long long)t.Messages());
     if (t.HidSeen())
+    {
         o.P("| Raw HID reports | %llu |\n", (unsigned long long)t.HidReports());
+        if (t.HidSplitReports())
+            o.P("| Reports per scan | %llu reports for %llu scans, %llu of them continuations |\n",
+                (unsigned long long)t.HidReports(), (unsigned long long)t.HidFrames(),
+                (unsigned long long)t.HidSplitReports());
+    }
     else
         o.S("| Raw HID reports | none observed |\n");
     if (t.IntervalMs().n)
@@ -903,6 +964,25 @@ static void MdScreen(Out& o, const ExportContext& ctx, const TouchDevice* dev, b
             ih.Percentile(0.50), ih.Percentile(0.90), ih.Percentile(0.99), ih.Percentile(0.999));
     }
     o.S("\n");
+    if (t.HidSplitReports())
+    {
+        HidDescriptorInfo di;
+        uint32_t slots = ScreenDescriptor(ctx, di) ? di.fingerCollections : 0;
+        if (!slots && dev) slots = dev->hidMaxContacts;
+        char carries[96];
+        if (slots) snprintf(carries, sizeof carries, "%u contact slot%s", slots, slots == 1 ? "" : "s");
+        else       snprintf(carries, sizeof carries, "fewer contact slots than the panel tracks");
+        char upTo[64] = "";
+        if (t.HidMaxContactCount())
+            snprintf(upTo, sizeof upTo, " and it has declared up to %u contacts in one scan",
+                     t.HidMaxContactCount());
+        o.P("**This panel splits one scan across several HID reports.** Its report carries %s%s,\n"
+            "so the rest follow in continuation reports — HID hybrid mode. Windows assembles them\n"
+            "into one input frame, and every rate here counts scans rather than reports, so they\n"
+            "stay comparable with a panel that fits every contact into one report. `Raw HID\n"
+            "reports` above is the report count, which runs ahead of the scan count whenever more\n"
+            "contacts are down than one report holds.\n\n", carries, upTo);
+    }
     MdDelivery(o, ctx);
     if (GridScanRan(ctx)) MdGridScan(o, *ctx.grid);
 
@@ -1170,11 +1250,11 @@ static bool WriteJson(const std::wstring& path, const ExportContext& ctx)
             const Stats& s = tr.IntervalMsAt(n);
             if (!first) o.S(",\n");
             first = false;
-            o.P("      {\"contacts\": %d, \"modal_hz\": %.4f, \"mean_hz\": %.4f,"
+            o.P("      {\"contacts\": %d, \"modal_hz\": %.4f, \"peak_hz\": %.4f, \"mean_hz\": %.4f,"
                 " \"interval_mean_ms\": %.6f, \"interval_sd_ms\": %.6f,"
                 " \"interval_min_ms\": %.6f, \"interval_max_ms\": %.6f,"
                 " \"max_gap_ms\": %.6f, \"samples\": %llu}",
-                n, tr.ModeHzAt(n), tr.MeanHzAt(n), s.mean, s.Sd(), s.mn, s.mx,
+                n, tr.ModeHzAt(n), tr.PeakHzAt(n), tr.MeanHzAt(n), s.mean, s.Sd(), s.mn, s.mx,
                 tr.MaxGapMsAt(n), (unsigned long long)s.n);
         }
         if (!first) o.S("\n");
@@ -1263,8 +1343,8 @@ static bool WriteJson(const std::wstring& path, const ExportContext& ctx)
         (unsigned long long)t.HistorySamples());
     o.P("    \"pointer_messages\": %llu, \"raw_hid_reports\": %llu,\n",
         (unsigned long long)t.Messages(), (unsigned long long)t.HidReports());
-    o.P("    \"modal_hz\": %.4f, \"mean_hz\": %.4f, \"max_gap_ms\": %.4f,\n",
-        t.ModeHz(), t.AvgHz(), t.MaxGapMs());
+    o.P("    \"modal_hz\": %.4f, \"peak_hz\": %.4f, \"mean_hz\": %.4f, \"max_gap_ms\": %.4f,\n",
+        t.ModeHz(), t.PeakHz(), t.AvgHz(), t.MaxGapMs());
     if (ih.total)
         o.P("    \"interval_p50_ms\": %.6f, \"interval_p90_ms\": %.6f,"
             " \"interval_p99_ms\": %.6f, \"interval_p999_ms\": %.6f,\n",
@@ -1300,6 +1380,8 @@ static bool WriteJson(const std::wstring& path, const ExportContext& ctx)
     o.S("  \"delivery\": {\n");
     o.P("    \"hid_reports\": %llu, \"hid_frames\": %llu,\n",
         (unsigned long long)t.HidReports(), (unsigned long long)t.HidFrames());
+    o.P("    \"hid_split_reports\": %llu, \"hid_max_contact_count\": %u,\n",
+        (unsigned long long)t.HidSplitReports(), t.HidMaxContactCount());
     o.P("    \"hid_touch_reports\": %llu, \"hid_no_tip_reports\": %llu, \"hid_empty_reports\": %llu,\n",
         (unsigned long long)t.HidTouchReports(), (unsigned long long)t.HidNoTipReports(),
         (unsigned long long)t.HidEmptyReports());
@@ -1358,8 +1440,8 @@ static bool WriteJson(const std::wstring& path, const ExportContext& ctx)
         o.P("    \"hid_reports\": %llu, \"frames\": %llu, \"samples\": %llu,\n",
             (unsigned long long)in.Reports(), (unsigned long long)p.TotalFrames(),
             (unsigned long long)p.TotalSamples());
-        o.P("    \"modal_hz\": %.4f, \"mean_hz\": %.4f, \"max_gap_ms\": %.4f,\n",
-            p.ModeHz(), p.AvgHz(), p.MaxGapMs());
+        o.P("    \"modal_hz\": %.4f, \"peak_hz\": %.4f, \"mean_hz\": %.4f, \"max_gap_ms\": %.4f,\n",
+            p.ModeHz(), p.PeakHz(), p.AvgHz(), p.MaxGapMs());
         if (ph.total)
             o.P("    \"interval_p50_ms\": %.6f, \"interval_p90_ms\": %.6f,"
                 " \"interval_p99_ms\": %.6f, \"interval_p999_ms\": %.6f,\n",

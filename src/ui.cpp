@@ -745,6 +745,9 @@ static void DrawStats(App& app, const Rect2& box)
             c.Row("worst gap", Pal::textFaint, "--");
         }
         double hidHz = t.HidReportHz(now);
+        // A panel that splits a scan sends more reports than it makes scans,
+        // so the label says which of the two this rate counts.
+        const char* hidLabel = t.HidSplitReports() ? "raw HID reports (split)" : "raw HID reports";
         // Raw HID and delivery share a row: a lost touch is the thing to see.
         // A pad has no delivery to check; which clock timed it matters instead.
         if (pad)
@@ -757,14 +760,14 @@ static void DrawStats(App& app, const Rect2& box)
             else                       c.Row("timed by", Pal::textDim, "arrival (no pad clock)");
         }
         else if (!t.HidSeen())
-            c.Row("raw HID reports", Pal::textFaint, "not observed");
+            c.Row(hidLabel, Pal::textFaint, "not observed");
         else if (t.HidUndelivered())
-            c.Row("raw HID reports", Pal::bad, "%.0f /s   %llu touch%s lost", hidHz,
+            c.Row(hidLabel, Pal::bad, "%.0f /s   %llu touch%s lost", hidHz,
                   (unsigned long long)t.HidUndelivered(), t.HidUndelivered() == 1 ? "" : "es");
         else if (t.HidContacts())
-            c.Row("raw HID reports", Pal::accent, "%.0f /s   none lost", hidHz);
+            c.Row(hidLabel, Pal::accent, "%.0f /s   none lost", hidHz);
         else
-            c.Row("raw HID reports", Pal::accent, "%.0f /s", hidHz);
+            c.Row(hidLabel, Pal::accent, "%.0f /s", hidHz);
         y = b.b() + gap;
     }
 

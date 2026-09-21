@@ -53,6 +53,8 @@ void Tracker::ResetStats()
     m_undeliveredDropped = 0;
     m_hidFrames = m_hidTouchReports = m_hidNoTipReports = m_hidEmptyReports = 0;
     m_hidContacts = m_hidDelivered = m_hidUndelivered = 0;
+    m_hidSplitReports = 0;
+    m_hidMaxContactCount = 0;
     m_hidOffWindow = m_hidOffWindowBlocked = 0;
     m_hidMatchOffset.Reset(); m_deliveredEdge.Reset(); m_undeliveredEdge.Reset();
     m_maxSimultaneous = m_contactsNow;
@@ -173,7 +175,11 @@ void Tracker::HandleHidReport(const std::vector<HidContactSample>& contacts,
 {
     ++m_hidReports;
     m_hidRate.Tick(now);
+    // A panel with more contacts than its report has slots sends the rest in
+    // continuation reports; the scan is the frame they make up together.
     if (info.frameStart) ++m_hidFrames;
+    else ++m_hidSplitReports;
+    m_hidMaxContactCount = std::max(m_hidMaxContactCount, info.contactCount);
     switch (info.kind)
     {
     case HRK_TOUCH: ++m_hidTouchReports; break;
@@ -785,22 +791,19 @@ void Tracker::Update(int64_t now)
     }
 }
 
-// The rate at the most common interval. On a clock that counts in coarse
-// steps a steady rate is spread over neighbouring steps - a pad at 134 Hz on
-// a 1 ms clock reads as 7 and 8 ms - so there the rate is the centre of the
-// whole peak: every step within reach of the tallest one, but not a separate
-// cluster such as missed reports.
-static double PeakHz(const Histogram& h, double clockResMs)
+// The centre of the interval peak: the tallest step and every neighbouring
+// one that belongs with it, weighted by the samples in each, stopping at a
+// separate cluster such as missed reports.
+//
+// A digitizer whose reports land on a coarse tick alternates between two
+// intervals - a 95.5 Hz panel on a 1 ms USB frame clock reads as 10 and 11 ms,
+// a 134 Hz pad on a 1 ms clock as 7 and 8 - and the tallest step alone names
+// neither rate.
+static double PeakCentreHz(const Histogram& h, double reachMs)
 {
     const int m = h.ModeBin();
     if (m < 0) return 0;
-    if (clockResMs <= h.binW * 1.5)
-    {
-        const double ms = h.BinCenter(m);
-        return ms > 0 ? 1000.0 / ms : 0;
-    }
-    // Empty bins allowed between two steps, with one to spare for rounding.
-    const int reach = (int)std::ceil(clockResMs / h.binW) + 1;
+    const int reach = (int)std::ceil(reachMs / h.binW);
     int lo = m, hi = m;
     for (int i = m - 1, gap = 0; i >= 0 && gap <= reach; --i)
     {
@@ -815,14 +818,42 @@ static double PeakHz(const Histogram& h, double clockResMs)
     return sum > 0 ? 1000.0 * n / sum : 0;
 }
 
+// How far the peak may reach: a whole step of the clock the intervals are
+// timed on, and in any case a quarter of the interval itself, which spans the
+// neighbouring ticks without reaching a missed report at twice the interval.
+static double PeakReachMs(const Histogram& h, double clockResMs)
+{
+    const int m = h.ModeBin();
+    const double ms = m >= 0 ? h.BinCenter(m) : 0;
+    return std::max(clockResMs + h.binW, ms * 0.25);
+}
+
 double Tracker::ModeHz() const
 {
-    return PeakHz(m_intervalHist, m_clockResMs);
+    // A coarse clock spreads one rate over two steps, so the tallest step on
+    // its own would name a rate the device never reports.
+    if (m_clockResMs > m_intervalHist.binW * 1.5)
+        return PeakCentreHz(m_intervalHist, PeakReachMs(m_intervalHist, m_clockResMs));
+    const int b = m_intervalHist.ModeBin();
+    if (b < 0) return 0;
+    const double ms = m_intervalHist.BinCenter(b);
+    return ms > 0 ? 1000.0 / ms : 0;
+}
+
+double Tracker::PeakHz() const
+{
+    return PeakCentreHz(m_intervalHist, PeakReachMs(m_intervalHist, m_clockResMs));
 }
 
 // ------------------------------------------------------- rate by contact count
 
 static int ClampCount(int n) { return (n < 0 || n > kMaxSlots) ? 0 : n; }
+
+double Tracker::PeakHzAt(int contacts) const
+{
+    const Histogram& h = m_intervalHistByCount[ClampCount(contacts)];
+    return PeakCentreHz(h, PeakReachMs(h, m_clockResMs));
+}
 
 const Stats& Tracker::IntervalMsAt(int contacts) const
 {
@@ -834,7 +865,12 @@ const Histogram& Tracker::IntervalHistAt(int contacts) const
 }
 double Tracker::ModeHzAt(int contacts) const
 {
-    return PeakHz(m_intervalHistByCount[ClampCount(contacts)], m_clockResMs);
+    const Histogram& h = m_intervalHistByCount[ClampCount(contacts)];
+    if (m_clockResMs > h.binW * 1.5) return PeakCentreHz(h, PeakReachMs(h, m_clockResMs));
+    const int b = h.ModeBin();
+    if (b < 0) return 0;
+    const double ms = h.BinCenter(b);
+    return ms > 0 ? 1000.0 / ms : 0;
 }
 double Tracker::MeanHzAt(int contacts) const
 {
