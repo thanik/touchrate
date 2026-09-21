@@ -9,6 +9,11 @@ Panels measured with [TouchRate](../README.md). Rate is the modal report rate
 with one finger down versus ten; latency is the median delivery latency. Full
 figures and hardware identification are on each panel's own page.
 
+Some panels do not space their reports evenly: the gap alternates between two
+values, say 10 ms and then 11 ms. The rate above is then the more common of the
+two gaps, not what the panel averages out to. Where that happens the comment
+gives both, and the panel's own page has the averaged figure.
+
 | Model | Contacts | Rate 1 → 10 fingers | Latency p50 | Comment | Test Result | Link |
 | --- | ---: | ---: | ---: | --- | --- | --- |
 | EVICIV 18.5" 120Hz Touchscreen Monitor, 1080P for Laptop/PC/Game Console | 10 | 84 → 38 Hz | 0.31 ms | ❌ Bad polling rate, and touch points drop once 5+ fingers are down at the same time | [Result](eviciv-18-5-120hz-1080p/README.md) | [Amazon UK](https://www.amazon.co.uk/dp/B0G4QZD6XX) |
@@ -16,6 +21,7 @@ figures and hardware identification are on each panel's own page.
 | UPERFECT Portable Monitor Touchscreen 120Hz 18.5" | 10 | 59 → 59 Hz | 0.30 ms | ➖ Stable polling rate from 1 to 10 fingers and no touch drops so far, even with 10 fingers, but ~60 Hz is too low | [Result](uperfect-18-5-120hz/README.md) | [Amazon UK](https://www.amazon.co.uk/dp/B0DR8TM4Y5) |
 | UPERFECT 15.6" Portable Monitor Touchscreen (non-kickstand model) | 10 | 124 → 124 Hz | 0.20 ms | ➖ Stable polling rate all the way to 10 fingers. Seems like it uses the same ILITEK touch controller as the Waveshare with identical USB Product ID — but touch points drop a little more often than on the Waveshare with 2+ fingers down | [Result](uperfect-15-6-non-kickstand/README.md) | [Amazon UK](https://www.amazon.co.uk/dp/B0FS1Y3LT3) |
 | UPERFECT 21.5" Portable Monitor Touchscreen 120Hz FHD Screen Aluminum Shell | 10 | 84 → 77 Hz | 0.26 ms | ❌ The screen is large and looks nice, but the polling rate drops once 7+ fingers are down, and even the best rate is a bit low. Touch points merge into one when fingers are close together | [Result](uperfect-21-5-120hz-1080p/README.md) | [Amazon UK](https://www.amazon.co.uk/dp/B0FJL6FJNJ) |
+| Magedok 17.3" 1080P FHD 300Hz Touchscreen Monitor (MG300-FT01) | 10 | 100 → 100 Hz | 1.21 ms | ✔️ Stable polling rate from 1 to 10 fingers and no touch point drops so far. Its reports are not evenly spaced: the gap alternates between 10 ms and 11 ms, so the 100 Hz above is only the more common gap and it averages out to **95 Hz** — mid-tier, the same bracket as the Waveshare. It also sends its contacts five at a time, so ten fingers arrive as two reports. The touch point follows the finger nicely on a high refresh rate display | [Result](magedok-mg300-ft01/README.md) | [Magedok](https://store.magedok.com/products/17-3-inch-300hz-touch-monitor-with-mg300-ft01), [Amazon UK](https://www.amazon.co.uk/dp/B09W286P1V) |
 
 ## Adding a result
 
