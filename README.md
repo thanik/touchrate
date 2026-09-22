@@ -26,6 +26,8 @@ permits.
 
 ![TouchRate](docs/screenshot.png)
 
+*Ten fingers on a simulated 125 Hz touch screen.*
+
 ## Build
 
 Requires Visual Studio (2019 or newer) with **Desktop development with C++**,
