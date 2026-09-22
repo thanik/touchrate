@@ -198,26 +198,41 @@ public:
     const Ring& HzRing() const { return m_hzRing; }
 
     double MaxGapMs() const { return m_maxGapMs; }
+    // Mean over every gap, including the long ones missed reports leave.
     double AvgHz()    const { return m_intervalMs.n && m_intervalMs.mean > 0 ? 1000.0 / m_intervalMs.mean : 0.0; }
+    // The report rate, which every figure is given as: the average of the
+    // device's normal gaps between reports - the most common gap and those
+    // around it - as reports per second. A gap a missed report leaves sits far
+    // from the rest and is not averaged in.
+    double RateHz()   const;
+    double RateHzAt(int contacts) const;
+    // The most common gap, and the rate it alone would give. That matches the
+    // report rate for a device that keeps one gap, and misstates one whose gap
+    // varies - a panel whose reports fall on a 1 ms clock alternates between two.
+    double ModeMs()   const;
     double ModeHz()   const;
-    // The centre of the interval peak, which covers a digitizer that
-    // alternates between two intervals because its reports land on a coarse
-    // tick. ModeHz stays the tallest step, comparable across every panel
-    // measured; this is the rate such a panel actually delivers.
-    double PeakHz()   const;
-    double PeakHzAt(int contacts) const;
+
+    // Whether the gap between reports varies enough for the most common gap
+    // alone to misstate the rate. Judged at each contact count separately,
+    // since a panel that slows down as fingers are added spreads its gaps for
+    // another reason, and only where there are enough intervals to tell.
+    bool   GapsJudged() const;
+    bool   GapsVary()   const;
 
     // Resolution of the clock the intervals are timed on, when it is coarser
     // than the histogram: a touch pad's scan time may count whole milliseconds.
-    // The modal rate is then the centre of the interval peak, not its tallest step.
+    // Even a steady gap then reads as a mix of the steps around it, so its most
+    // common gap says nothing; the report rate, an average, is unaffected.
     void   SetClockResolutionMs(double ms) { m_clockResMs = ms; }
     double ClockResolutionMs() const { return m_clockResMs; }
+    bool   CoarseClock() const { return m_clockResMs > m_intervalHist.binW * 1.5; }
 
     // Report rate broken down by how many contacts the digitizer was tracking.
     // Many panels slow down as fingers are added, which is exactly the case a
     // rhythm game hits during dense passages.
     const Stats&     IntervalMsAt(int contacts) const;
     const Histogram& IntervalHistAt(int contacts) const;
+    double ModeMsAt(int contacts) const;
     double ModeHzAt(int contacts) const;
     double MeanHzAt(int contacts) const;
     double MaxGapMsAt(int contacts) const;

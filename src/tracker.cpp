@@ -791,9 +791,9 @@ void Tracker::Update(int64_t now)
     }
 }
 
-// The centre of the interval peak: the tallest step and every neighbouring
-// one that belongs with it, weighted by the samples in each, stopping at a
-// separate cluster such as missed reports.
+// The report rate, from the centre of the interval peak: the tallest step and
+// every neighbouring one that belongs with it, weighted by the samples in each,
+// stopping at a separate cluster such as missed reports.
 //
 // A digitizer whose reports land on a coarse tick alternates between two
 // intervals - a 95.5 Hz panel on a 1 ms USB frame clock reads as 10 and 11 ms,
@@ -828,19 +828,25 @@ static double PeakReachMs(const Histogram& h, double clockResMs)
     return std::max(clockResMs + h.binW, ms * 0.25);
 }
 
+// The most common gap: the mean of the values in the tallest step, which is
+// exact where the step's centre would be off by up to half a step.
+static double ModalMs(const Histogram& h)
+{
+    const int b = h.ModeBin();
+    if (b < 0) return 0;
+    const uint64_t n = h.bins[(size_t)b];
+    return n ? h.sums[(size_t)b] / (double)n : h.BinCenter(b);
+}
+
+double Tracker::ModeMs() const { return ModalMs(m_intervalHist); }
+
 double Tracker::ModeHz() const
 {
-    // A coarse clock spreads one rate over two steps, so the tallest step on
-    // its own would name a rate the device never reports.
-    if (m_clockResMs > m_intervalHist.binW * 1.5)
-        return PeakCentreHz(m_intervalHist, PeakReachMs(m_intervalHist, m_clockResMs));
-    const int b = m_intervalHist.ModeBin();
-    if (b < 0) return 0;
-    const double ms = m_intervalHist.BinCenter(b);
+    const double ms = ModeMs();
     return ms > 0 ? 1000.0 / ms : 0;
 }
 
-double Tracker::PeakHz() const
+double Tracker::RateHz() const
 {
     return PeakCentreHz(m_intervalHist, PeakReachMs(m_intervalHist, m_clockResMs));
 }
@@ -849,10 +855,32 @@ double Tracker::PeakHz() const
 
 static int ClampCount(int n) { return (n < 0 || n > kMaxSlots) ? 0 : n; }
 
-double Tracker::PeakHzAt(int contacts) const
+double Tracker::RateHzAt(int contacts) const
 {
     const Histogram& h = m_intervalHistByCount[ClampCount(contacts)];
     return PeakCentreHz(h, PeakReachMs(h, m_clockResMs));
+}
+
+// Intervals one contact count needs before its most common gap means much.
+static constexpr uint64_t kGapJudgeMin = 100;
+
+bool Tracker::GapsJudged() const
+{
+    for (int n = 1; n <= kMaxSlots; ++n)
+        if (m_intervalByCount[n].n >= kGapJudgeMin) return true;
+    return false;
+}
+
+bool Tracker::GapsVary() const
+{
+    if (CoarseClock()) return false;
+    for (int n = 1; n <= kMaxSlots; ++n)
+    {
+        if (m_intervalByCount[n].n < kGapJudgeMin) continue;
+        const double mode = ModeHzAt(n);
+        if (mode > 0 && std::fabs(RateHzAt(n) / mode - 1.0) > 0.02) return true;
+    }
+    return false;
 }
 
 const Stats& Tracker::IntervalMsAt(int contacts) const
@@ -863,13 +891,13 @@ const Histogram& Tracker::IntervalHistAt(int contacts) const
 {
     return m_intervalHistByCount[ClampCount(contacts)];
 }
+double Tracker::ModeMsAt(int contacts) const
+{
+    return ModalMs(m_intervalHistByCount[ClampCount(contacts)]);
+}
 double Tracker::ModeHzAt(int contacts) const
 {
-    const Histogram& h = m_intervalHistByCount[ClampCount(contacts)];
-    if (m_clockResMs > h.binW * 1.5) return PeakCentreHz(h, PeakReachMs(h, m_clockResMs));
-    const int b = h.ModeBin();
-    if (b < 0) return 0;
-    const double ms = h.BinCenter(b);
+    const double ms = ModeMsAt(contacts);
     return ms > 0 ? 1000.0 / ms : 0;
 }
 double Tracker::MeanHzAt(int contacts) const

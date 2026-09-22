@@ -4,14 +4,19 @@
 **Display:** RTK FHD HDR  — 1920 × 1080 @ 60.000 Hz nominal, 59.999 Hz measured  
 **Session:** 151.7 s, of which 137.3 s with at least one contact
 
+> The rate figures, and the observations that depend on them, were regenerated on
+> 2026-09-22 from this export's raw samples, to give the average gap between reports
+> rather than the most common one. Everything else is as exported.
+
 ## Headline
 
 | Metric | Value |
 | --- | --- |
-| Modal report rate | **124.2 Hz** |
-| Mean report rate | 125.0 Hz |
-| Rate at 1 contact | 124.2 Hz |
-| Rate at 10 contacts | 124.2 Hz |
+| Report rate | **125.0 Hz** |
+| Rate at 1 contact | 125.0 Hz |
+| Rate at 10 contacts | 125.0 Hz |
+| Gap between reports | steady |
+| Mean over every gap | 125.0 Hz |
 | Interval jitter (sd) | 0.000 ms |
 | Worst gap | 8.00 ms |
 | Delivery latency p50 / p99 | 0.65 / 1.19 ms |
@@ -21,20 +26,51 @@
 ## Report rate by contact count
 
 How the digitizer's report rate changes as fingers are added. Each row covers
-the intervals measured while exactly that many contacts were down.
+the intervals measured while exactly that many contacts were down. Mean Hz counts
+every gap, so it falls below Rate Hz when reports go missing.
 
-| Contacts | Modal Hz | Mean Hz | Interval ms | Jitter sd ms | Worst gap ms | Intervals | % of 1 contact |
+| Contacts | Rate Hz | Mean Hz | Interval ms | Jitter sd ms | Worst gap ms | Intervals | % of 1 contact |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 124.2 | 125.0 | 8.000 | 0.000 | 8.00 | 3977 | 100.0% |
-| 2 | 124.2 | 125.0 | 8.000 | 0.000 | 8.00 | 1750 | 100.0% |
-| 3 | 124.2 | 125.0 | 8.000 | 0.000 | 8.00 | 610 | 100.0% |
-| 4 | 124.2 | 125.0 | 8.000 | 0.000 | 8.00 | 1817 | 100.0% |
-| 5 | 124.2 | 125.0 | 8.000 | 0.000 | 8.00 | 952 | 100.0% |
-| 6 | 124.2 | 125.0 | 8.000 | 0.000 | 8.00 | 961 | 100.0% |
-| 7 | 124.2 | 125.0 | 8.000 | 0.000 | 8.00 | 874 | 100.0% |
-| 8 | 124.2 | 125.0 | 8.000 | 0.000 | 8.00 | 1078 | 100.0% |
-| 9 | 124.2 | 125.0 | 8.000 | 0.000 | 8.00 | 937 | 100.0% |
-| 10 | 124.2 | 125.0 | 8.000 | 0.000 | 8.00 | 5472 | 100.0% |
+| 1 | 125.0 | 125.0 | 8.000 | 0.000 | 8.00 | 3977 | 100.0% |
+| 2 | 125.0 | 125.0 | 8.000 | 0.000 | 8.00 | 1750 | 100.0% |
+| 3 | 125.0 | 125.0 | 8.000 | 0.000 | 8.00 | 610 | 100.0% |
+| 4 | 125.0 | 125.0 | 8.000 | 0.000 | 8.00 | 1817 | 100.0% |
+| 5 | 125.0 | 125.0 | 8.000 | 0.000 | 8.00 | 952 | 100.0% |
+| 6 | 125.0 | 125.0 | 8.000 | 0.000 | 8.00 | 961 | 100.0% |
+| 7 | 125.0 | 125.0 | 8.000 | 0.000 | 8.00 | 874 | 100.0% |
+| 8 | 125.0 | 125.0 | 8.000 | 0.000 | 8.00 | 1078 | 100.0% |
+| 9 | 125.0 | 125.0 | 8.000 | 0.000 | 8.00 | 937 | 100.0% |
+| 10 | 125.0 | 125.0 | 8.000 | 0.000 | 8.00 | 5472 | 100.0% |
+
+## How the rate is measured
+
+Every rate in this report is the average gap between reports, turned into reports
+per second, and it is the figure to compare devices by. Only the normal gaps count:
+one far longer than the rest, left by a report that went missing, is not averaged
+in. Missed reports show up in the worst gap instead, and in the Mean Hz column,
+which counts every gap.
+
+The table below also gives the rate the most common gap alone would suggest. For a
+device that keeps the same gap every time, the two agree. For one whose gap varies,
+the most common gap is only one of several, and on its own it misstates how many
+reports arrive each second.
+
+This panel keeps a steady gap between reports: wherever there are enough intervals to
+judge, the two rates agree to within 2%.
+
+| Contacts | Rate Hz | Most common gap ms | That gap alone, Hz | Difference |
+| ---: | ---: | ---: | ---: | ---: |
+| all | **125.0** | 8.00 | 125.0 | +0.0% |
+| 1 | **125.0** | 8.00 | 125.0 | +0.0% |
+| 2 | **125.0** | 8.00 | 125.0 | +0.0% |
+| 3 | **125.0** | 8.00 | 125.0 | +0.0% |
+| 4 | **125.0** | 8.00 | 125.0 | +0.0% |
+| 5 | **125.0** | 8.00 | 125.0 | +0.0% |
+| 6 | **125.0** | 8.00 | 125.0 | +0.0% |
+| 7 | **125.0** | 8.00 | 125.0 | +0.0% |
+| 8 | **125.0** | 8.00 | 125.0 | +0.0% |
+| 9 | **125.0** | 8.00 | 125.0 | +0.0% |
+| 10 | **125.0** | 8.00 | 125.0 | +0.0% |
 
 ## Report timing
 
@@ -109,10 +145,10 @@ Observed himetric range: x 2..30927, y 1..17389 (0.01 mm units).
 
 ## Observations
 
-- Modal report rate is **124 Hz** (8.05 ms per report).
-- Interval jitter is low: sd 0.00 ms against a 8.05 ms period.
+- Report rate is **125 Hz** (a report every 8.00 ms).
+- Interval jitter is low: sd 0.00 ms against a 8.00 ms period.
 - Worst gap 8.0 ms stayed within 1.0× the normal period; no report was dropped.
-- Report rate holds within 0% across the contact counts measured.
+- Report rate does not change with the number of contacts.
 - Median delivery latency 0.65 ms, p99 1.19 ms.
 - The OS applies no measurable smoothing or prediction to reported positions.
 

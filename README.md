@@ -93,12 +93,17 @@ report the hardware actually sent. Press `H` to turn that off and see the
 delivery rate an app would observe if it read only the newest sample per
 message — the difference between the two is how much a slow app would lose.
 
+The rate is the average gap between reports, turned into reports per second.
+Only the normal gaps count: a gap far longer than the rest, left by a report the
+digitizer missed, is not averaged in, so a missed report shows up in the worst
+gap and the tail rather than dragging the rate down. The screen, the exported
+report and the [results table](results/README.md) all give this one rate, and
+it is the figure to compare panels by.
+
 Reported alongside it:
 
-- **modal rate** — the most common interval, i.e. the device's nominal rate
-- **peak-centred rate** — the same intervals measured from the centre of the
-  peak (see below), reported in its own section
-- **mean rate** — 1 / mean interval, which drops if the device stalls
+- **mean rate** — 1 / the mean of every gap, missed reports included, so it
+  drops if the device stalls
 - **jitter (sd)** — the number that matters most for rhythm games; a steady
   100 Hz beats an erratic 200 Hz
 - **worst gap** — the longest interval between consecutive reports; a single
@@ -109,22 +114,24 @@ Intervals are only measured while the screen is continuously touched. The pause
 between two separate touches is the user's, not the digitizer's, and is never
 counted as a gap.
 
-### Peak-centred rate
+### When the gap between reports varies
 
-The modal rate describes a digitizer that spaces its reports evenly. Not all of
-them do. A panel that times its reports in whole milliseconds cannot send one
-every 10.47 ms, so it alternates: 10 ms, then 11, then 10 again. That is 95.5
-reports a second, but the most common gap is 10 ms and the modal rate calls it
-100 Hz — a rate the panel never delivers.
+Most panels keep the same gap between reports every time. Some keep switching
+between a shorter and a longer one, often because they can only send on a
+whole millisecond. Say a panel's gaps run 8 ms, 8 ms, 9 ms, over and over: its
+most common gap is 8 ms, which would make it a 125 Hz panel, but it averages
+one report every 8.33 ms — 120 a second. Going by the most common gap alone
+overstates such a panel; the average gives the 120 it actually sends.
 
-So every export also carries a **Report rate, peak-centred** section, which
-averages the gaps that belong together — the most common one and its
-neighbours — instead of taking only the most common. A missed report leaves a
-gap of twice the interval or more, far from the rest, and stays out of that
-average, so this is not the plain mean either. The headline and the
-rate-by-contact-count table keep the modal figure, so every panel measured
-stays comparable; the peak-centred section reports both side by side, per
-contact count, with the difference between them.
+Each export's **How the rate is measured** section says whether the panel's
+gap varies, quoting the panel's own figures, and sets the rate beside the one
+the most common gap alone would give at every contact count. The gap counts as
+varying when the two differ by more than 2% at any contact count with at least
+100 intervals. On screen, the report rate block reads `gaps steady` or
+`gaps vary`.
+
+Versions of TouchRate before this one reported the most common gap as the
+rate, so an export made with one of them shows that figure instead.
 
 ### Report rate by contact count
 
@@ -133,9 +140,9 @@ game hits during dense passages. TouchRate attributes every measured interval
 to the number of contacts the digitizer was tracking while that interval
 elapsed, and reports the rate for each count separately.
 
-The multi-touch panel shows the modal rate under each finger-count pip live,
-amber once a count runs below 80% of the best rate observed. The report carries
-the full table — modal and mean Hz, mean interval, jitter, worst gap and sample
+The multi-touch panel shows the rate under each finger-count pip live, amber
+once a count runs below 80% of the best rate observed. The report carries the
+full table — rate and mean Hz, mean interval, jitter, worst gap and interval
 count per contact count — plus each count as a percentage of the single-contact
 baseline, and `raw/rate_by_contacts.csv` has the same data for plotting.
 
@@ -144,11 +151,11 @@ panel, whose full export is in this repo:
 
 | contacts | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| modal Hz | 84 | 67 | 59 | 50 | 50 | 50 | 45 | 48 | 40 | 38 |
-| % of 1 finger | 100 | 80 | 70 | 60 | 60 | 60 | 54 | 57 | 48 | 46 |
+| Hz | 86 | 69 | 59 | 52 | 49 | 47 | 46 | 45 | 42 | 40 |
+| % of 1 finger | 100 | 80 | 69 | 60 | 57 | 54 | 54 | 52 | 49 | 47 |
 
 Press one finger, then two, and so on up to ten, holding each for a few seconds
-so every row gets enough intervals — the `samples` column tells you which rows
+so every row gets enough intervals — the `Intervals` column tells you which rows
 are well supported.
 
 ### Panels that split a scan across reports
@@ -293,9 +300,10 @@ the click button, and the Confidence flag the pad uses to reject a palm.
   reported as the jitter added between the pad and the app.
 - **Clocks that count in whole milliseconds.** Many pads only advance that
   field in 1 ms steps, so a steady 7.44 ms period reads as a mix of 7 and 8 ms
-  intervals. TouchRate detects the step and takes the modal rate from the
-  centre of the interval peak rather than its tallest step; jitter and worst
-  gap then carry up to one step of rounding, which the report states.
+  gaps. The rate is an average of those gaps, so it comes out right; the most
+  common gap says nothing on such a pad, and jitter and worst gap carry up to
+  one step of rounding. TouchRate detects the step, and the report and the
+  screen both say so.
 - **Bunched delivery.** Reports that reach the app together with the next one,
   although the pad produced them a full interval apart, are counted, with the
   longest wait between arrivals. Anything reading the pad gets those two
@@ -351,10 +359,10 @@ measurement is readable in the browser with no tooling.
 
 | File | Contents |
 | --- | --- |
-| `README.md` | Headline figures, rate by contact count, timing, latency, multi-touch, hardware identification and observations |
+| `README.md` | Headline figures, rate by contact count, how the rate is measured, timing, latency, multi-touch, hardware identification and observations |
 | `summary.json` | Every figure above, machine-readable |
 | `raw/samples.csv.gz` | Every buffered sample: device and host timestamps, interval, instantaneous Hz, latency, client/screen/raw/himetric coordinates, prediction delta, pressure, contact area. gzip — around 6x smaller, and read directly by `pandas.read_csv`, R, 7-Zip and `zcat` |
-| `raw/rate_by_contacts.csv` | Report rate for each simultaneous contact count, with percent of the single-contact baseline |
+| `raw/rate_by_contacts.csv` | Report rate (`rate_hz`) for each simultaneous contact count, beside the rate from the most common gap alone (`modal_hz`) and the mean over every gap, with percent of the single-contact baseline |
 | `raw/undelivered_touches.csv` | Every touch that started in TouchRate's window and that Windows did not deliver: position, duration, distance from the edge, whether edge-swipe blocking was in effect |
 | `raw/grid_coverage.csv` | Grid scan only: every cell's position relative to the monitor and how many samples landed in it |
 | `raw/contacts.csv` | Per-contact summary: sample count, interval stats, path length, down latency |

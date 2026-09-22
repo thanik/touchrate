@@ -31,20 +31,20 @@
     "history_recovery": true,
     "frames": 18639, "samples": 111419, "history_samples": 0,
     "pointer_messages": 18665, "raw_hid_reports": 28202,
-    "modal_hz": 100.5025, "peak_hz": 95.4603, "mean_hz": 95.4588, "max_gap_ms": 21.0188,
+    "rate_hz": 95.4603, "modal_hz": 100.1698, "mean_hz": 95.4588, "max_gap_ms": 21.0188,
     "interval_p50_ms": 10.091423, "interval_p90_ms": 11.058205, "interval_p99_ms": 11.096751, "interval_p999_ms": 11.190914,
     "interval_ms": {"n": 18635, "mean": 10.475727, "sd": 0.513664, "min": 2.999600, "max": 21.018800},
     "by_contact_count": [
-      {"contacts": 1, "modal_hz": 99.5025, "peak_hz": 95.4030, "mean_hz": 95.3327, "interval_mean_ms": 10.489578, "interval_sd_ms": 0.586072, "interval_min_ms": 9.885600, "interval_max_ms": 21.018800, "max_gap_ms": 21.018800, "samples": 1364},
-      {"contacts": 2, "modal_hz": 100.5025, "peak_hz": 95.4753, "mean_hz": 95.4753, "interval_mean_ms": 10.473914, "interval_sd_ms": 0.502188, "interval_min_ms": 8.956100, "interval_max_ms": 12.002400, "max_gap_ms": 12.002400, "samples": 2147},
-      {"contacts": 3, "modal_hz": 100.5025, "peak_hz": 95.4617, "mean_hz": 95.4617, "interval_mean_ms": 10.475400, "interval_sd_ms": 0.501712, "interval_min_ms": 9.881900, "interval_max_ms": 11.109400, "max_gap_ms": 11.109400, "samples": 1598},
-      {"contacts": 4, "modal_hz": 100.5025, "peak_hz": 95.4578, "mean_hz": 95.4578, "interval_mean_ms": 10.475835, "interval_sd_ms": 0.503806, "interval_min_ms": 8.019000, "interval_max_ms": 11.116000, "max_gap_ms": 11.116000, "samples": 1668},
-      {"contacts": 5, "modal_hz": 100.5025, "peak_hz": 95.4612, "mean_hz": 95.4612, "interval_mean_ms": 10.475461, "interval_sd_ms": 0.501737, "interval_min_ms": 9.000700, "interval_max_ms": 11.992300, "max_gap_ms": 11.992300, "samples": 2302},
-      {"contacts": 6, "modal_hz": 99.5025, "peak_hz": 95.4511, "mean_hz": 95.4511, "interval_mean_ms": 10.476564, "interval_sd_ms": 0.504036, "interval_min_ms": 8.986300, "interval_max_ms": 11.995800, "max_gap_ms": 11.995800, "samples": 1225},
-      {"contacts": 7, "modal_hz": 100.5025, "peak_hz": 95.4504, "mean_hz": 95.4504, "interval_mean_ms": 10.476650, "interval_sd_ms": 0.501485, "interval_min_ms": 9.876000, "interval_max_ms": 11.116100, "max_gap_ms": 11.116100, "samples": 1235},
-      {"contacts": 8, "modal_hz": 99.5025, "peak_hz": 95.4753, "mean_hz": 95.4753, "interval_mean_ms": 10.473916, "interval_sd_ms": 0.512599, "interval_min_ms": 7.966000, "interval_max_ms": 11.977600, "max_gap_ms": 11.977600, "samples": 1101},
-      {"contacts": 9, "modal_hz": 100.5025, "peak_hz": 95.3939, "mean_hz": 95.3939, "interval_mean_ms": 10.482847, "interval_sd_ms": 0.508890, "interval_min_ms": 9.012100, "interval_max_ms": 12.108400, "max_gap_ms": 12.108400, "samples": 1975},
-      {"contacts": 10, "modal_hz": 100.5025, "peak_hz": 95.5059, "mean_hz": 95.5229, "interval_mean_ms": 10.468694, "interval_sd_ms": 0.518565, "interval_min_ms": 2.999600, "interval_max_ms": 12.995400, "max_gap_ms": 12.995400, "samples": 4020}
+      {"contacts": 1, "rate_hz": 95.4030, "modal_hz": 99.8109, "mean_hz": 95.3327, "interval_mean_ms": 10.489578, "interval_sd_ms": 0.586072, "interval_min_ms": 9.885600, "interval_max_ms": 21.018800, "max_gap_ms": 21.018800, "samples": 1364},
+      {"contacts": 2, "rate_hz": 95.4753, "modal_hz": 100.1823, "mean_hz": 95.4753, "interval_mean_ms": 10.473914, "interval_sd_ms": 0.502188, "interval_min_ms": 8.956100, "interval_max_ms": 12.002400, "max_gap_ms": 12.002400, "samples": 2147},
+      {"contacts": 3, "rate_hz": 95.4617, "modal_hz": 100.1888, "mean_hz": 95.4617, "interval_mean_ms": 10.475400, "interval_sd_ms": 0.501712, "interval_min_ms": 9.881900, "interval_max_ms": 11.109400, "max_gap_ms": 11.109400, "samples": 1598},
+      {"contacts": 4, "rate_hz": 95.4578, "modal_hz": 100.1641, "mean_hz": 95.4578, "interval_mean_ms": 10.475835, "interval_sd_ms": 0.503806, "interval_min_ms": 8.019000, "interval_max_ms": 11.116000, "max_gap_ms": 11.116000, "samples": 1668},
+      {"contacts": 5, "rate_hz": 95.4612, "modal_hz": 100.1598, "mean_hz": 95.4612, "interval_mean_ms": 10.475461, "interval_sd_ms": 0.501737, "interval_min_ms": 9.000700, "interval_max_ms": 11.992300, "max_gap_ms": 11.992300, "samples": 2302},
+      {"contacts": 6, "rate_hz": 95.4511, "modal_hz": 99.8274, "mean_hz": 95.4511, "interval_mean_ms": 10.476564, "interval_sd_ms": 0.504036, "interval_min_ms": 8.986300, "interval_max_ms": 11.995800, "max_gap_ms": 11.995800, "samples": 1225},
+      {"contacts": 7, "rate_hz": 95.4504, "modal_hz": 100.1667, "mean_hz": 95.4504, "interval_mean_ms": 10.476650, "interval_sd_ms": 0.501485, "interval_min_ms": 9.876000, "interval_max_ms": 11.116100, "max_gap_ms": 11.116100, "samples": 1235},
+      {"contacts": 8, "rate_hz": 95.4753, "modal_hz": 99.8521, "mean_hz": 95.4753, "interval_mean_ms": 10.473916, "interval_sd_ms": 0.512599, "interval_min_ms": 7.966000, "interval_max_ms": 11.977600, "max_gap_ms": 11.977600, "samples": 1101},
+      {"contacts": 9, "rate_hz": 95.3939, "modal_hz": 100.1620, "mean_hz": 95.3939, "interval_mean_ms": 10.482847, "interval_sd_ms": 0.508890, "interval_min_ms": 9.012100, "interval_max_ms": 12.108400, "max_gap_ms": 12.108400, "samples": 1975},
+      {"contacts": 10, "rate_hz": 95.5059, "modal_hz": 100.1641, "mean_hz": 95.5229, "interval_mean_ms": 10.468694, "interval_sd_ms": 0.518565, "interval_min_ms": 2.999600, "interval_max_ms": 12.995400, "max_gap_ms": 12.995400, "samples": 4020}
     ]
   },
   "latency": {

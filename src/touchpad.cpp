@@ -105,7 +105,7 @@ void TouchPadInput::Flush()
 
     // The field counts 100 us, but many pads only advance it in whole
     // milliseconds. Single intervals are then only good to that step, and the
-    // modal rate has to be taken from the whole interval peak.
+    // most common one says nothing on its own.
     if (scanOk && m_useScan)
     {
         ++m_steps;

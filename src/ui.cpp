@@ -83,7 +83,7 @@ StatsMetrics MeasureStats(const Renderer& r, bool compact)
     m.hMulti   = m.titleH + m.rowH * 2 + 4 * s + m.pipR * 2
                + r.FontHeight(F_TINY) * 1.35f + (compact ? 4 : 8) * s;
     m.hCounters = r.FontHeight(F_TINY) * 1.25f * 2 + 6 * s;
-    // The small face still needs room for the modal / mean pair beside it.
+    // The small face still needs room for the session / gaps pair beside it.
     m.heroMin  = std::max(r.FontHeight(F_HEAD), r.FontHeight(F_BODY) * 2.5f) + m.chrome;
     m.heroMax  = r.FontHeight(F_HERO) + m.chrome;
     m.fixedH   = m.hTiming + m.hDeliver + m.hDisplay + m.hMulti + m.gap * 4 + m.pad * 2;
@@ -672,10 +672,9 @@ static void DrawStats(App& app, const Rect2& box)
     const float bx = box.x + m.pad;
 
     const double liveHz = t.FrameHz(now);
-    const double modeHz = t.ModeHz();
-    const double meanHz = t.AvgHz();
+    const double rateHz = t.RateHz();
     const Stats& iv = t.IntervalMs();
-    const double periodMs = modeHz > 0 ? 1000.0 / modeHz : 0.0;
+    const double periodMs = rateHz > 0 ? 1000.0 / rateHz : 0.0;
 
     // Give the hero block whatever is left after the fixed-size blocks, so a
     // short window shrinks the big number instead of clipping the last panel.
@@ -695,10 +694,10 @@ static void DrawStats(App& app, const Rect2& box)
 
         // Use the big face only when the block is tall enough to hold it.
         const int face = (heroH >= r.FontHeight(F_HERO) + chrome) ? F_HERO : F_HEAD;
-        Color c = RateColor(liveHz > 0 ? liveHz : modeHz);
+        Color c = RateColor(liveHz > 0 ? liveHz : rateHz);
         char num[32];
         if (liveHz > 0)       snprintf(num, sizeof num, "%.0f", liveHz);
-        else if (modeHz > 0)  snprintf(num, sizeof num, "%.0f", modeHz);
+        else if (rateHz > 0)  snprintf(num, sizeof num, "%.0f", rateHz);
         else                  snprintf(num, sizeof num, "--");
 
         const float ny = hb.y + r.FontHeight(F_TINY) * 1.6f;
@@ -707,15 +706,20 @@ static void DrawStats(App& app, const Rect2& box)
         r.Text(F_BODY, hb.x + 10 * s + nw + 8 * s,
                ny + r.FontHeight(face) - r.FontHeight(F_BODY) - 3 * s, Pal::textDim, "Hz");
 
-        // modal / mean stacked at the right, centred against the big number -
-        // but never above it, where the pair would run into the block title.
+        // The session's report rate, and whether the gap between reports
+        // varies, stacked at the right, centred against the big number - but
+        // never above it, where the pair would run into the block title.
         const float rx = hb.r() - 12 * s;
         const float pairH = r.FontHeight(F_BODY) * 1.25f;
         float ry = ny + std::max(0.f, (r.FontHeight(face) - pairH * 2) * 0.5f);
-        r.TextRight(F_BODY, rx, ry, modeHz > 0 ? Pal::text : Pal::textFaint,
-                    modeHz > 0 ? "modal  %.1f Hz" : "modal  -- Hz", modeHz);
-        r.TextRight(F_BODY, rx, ry + pairH, meanHz > 0 ? Pal::textDim : Pal::textFaint,
-                    meanHz > 0 ? "mean   %.1f Hz" : "mean   -- Hz", meanHz);
+        r.TextRight(F_BODY, rx, ry, rateHz > 0 ? Pal::text : Pal::textFaint,
+                    rateHz > 0 ? "session  %.1f Hz" : "session  -- Hz", rateHz);
+        if (t.CoarseClock())
+            r.TextRight(F_BODY, rx, ry + pairH, Pal::textDim, "gaps  %g ms clock", t.ClockResolutionMs());
+        else if (!t.GapsJudged())
+            r.TextRight(F_BODY, rx, ry + pairH, Pal::textFaint, "gaps  --");
+        else
+            r.TextRight(F_BODY, rx, ry + pairH, Pal::textDim, t.GapsVary() ? "gaps  vary" : "gaps  steady");
         y = hb.b() + gap;
     }
 
@@ -861,8 +865,8 @@ static void DrawStats(App& app, const Rect2& box)
     // ---- contacts / ten finger test
     {
         Rect2 b{ bx, y, bw, hMulti };
-        Block(r, b, pad ? "MULTI-TOUCH  (touch pad, modal Hz per count)"
-                        : "MULTI-TOUCH  (10 finger test, modal Hz per count)", kBlockA);
+        Block(r, b, pad ? "MULTI-TOUCH  (touch pad, Hz per count)"
+                        : "MULTI-TOUCH  (10 finger test, Hz per count)", kBlockA);
         Col c(r, Rect2{ b.x + 10 * s, b.y + titleH, bw - 20 * s, 0 });
         c.lh = rowH;
 
@@ -891,7 +895,7 @@ static void DrawStats(App& app, const Rect2& box)
         const float hzY = py + pipR + 4 * s;
         double bestHz = 0;
         for (int i = 1; i <= pips; ++i)
-            if (t.HasDataAt(i)) bestHz = std::max(bestHz, t.ModeHzAt(i));
+            if (t.HasDataAt(i)) bestHz = std::max(bestHz, t.RateHzAt(i));
 
         for (int i = 1; i <= pips; ++i)
         {
@@ -900,7 +904,7 @@ static void DrawStats(App& app, const Rect2& box)
 
             if (t.HasDataAt(i))
             {
-                double hz = t.ModeHzAt(i);
+                double hz = t.RateHzAt(i);
                 // Amber once this count runs materially slower than the best.
                 Color hc = (bestHz > 0 && hz < bestHz * 0.8) ? Pal::warn : Pal::textDim;
                 r.TextCenter(F_TINY, cxp, hzY, hc, "%.0f", hz);
@@ -1023,17 +1027,17 @@ static void DrawHistogram(App& app, const Rect2& box)
     // would run past the block.
     r.Text(F_TINY, box.x + 10 * s, plot.b() + 6 * s, Pal::textFaint, "ms");
 
-    // annotate the mode
+    // annotate the report rate
     if (modeBin >= lo && modeBin <= hi)
     {
-        // The tracker's modal rate: on a clock with coarse steps it sits at
-        // the centre of the peak, between the bars, rather than on the tallest.
-        const double modeHz = app.Shown().ModeHz();
-        const double ms = modeHz > 0 ? 1000.0 / modeHz : h.BinCenter(modeBin);
+        // The session's report rate, an average: where the gap varies it sits
+        // between the bars rather than on the tallest.
+        const double rateHz = app.Shown().RateHz();
+        const double ms = rateHz > 0 ? 1000.0 / rateHz : h.BinCenter(modeBin);
         float x = xOf(ms);
         r.FillRect(Rect2{ std::round(x), plot.y, 1, plot.h }, Pal::accent.WithA(0.5f));
         char lab[64];
-        snprintf(lab, sizeof lab, "%.2f ms = %.0f Hz", ms, ms > 0 ? 1000.0 / ms : 0.0);
+        snprintf(lab, sizeof lab, "%.2f ms = %.1f Hz", ms, ms > 0 ? 1000.0 / ms : 0.0);
         float lw = r.TextW(F_TINY, lab);
         float lx = Clampf(x - lw * 0.5f, plot.x, plot.r() - lw);
         // Backed, because it lands on a bar itself when every interval falls
@@ -1073,8 +1077,8 @@ static void DrawRateGraph(App& app, const Rect2& box)
     for (size_t i = 0; i < ring.count; ++i) maxHz = std::max(maxHz, ring.At(i));
     float top = maxHz * 1.08f;
 
-    // gridlines
-    const double modeHz = app.Shown().ModeHz();
+    // gridlines, and one at the session's report rate
+    const double rateHz = app.Shown().RateHz();
     for (int k = 1; k <= 4; ++k)
     {
         float v = top * k / 4.f;
@@ -1083,9 +1087,9 @@ static void DrawRateGraph(App& app, const Rect2& box)
         r.TextRight(F_TINY, plot.x - 6 * s, gy - r.FontHeight(F_TINY) * 0.5f, Pal::textFaint,
                     "%.0f", v);
     }
-    if (modeHz > 0 && modeHz < top)
+    if (rateHz > 0 && rateHz < top)
     {
-        float gy = plot.b() - (float)(modeHz / top) * plot.h;
+        float gy = plot.b() - (float)(rateHz / top) * plot.h;
         r.FillRect(Rect2{ plot.x, std::round(gy), plot.w, 1 }, Pal::accent.WithA(0.45f));
     }
 
