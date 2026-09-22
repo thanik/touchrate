@@ -237,7 +237,12 @@ public:
     double MeanHzAt(int contacts) const;
     double MaxGapMsAt(int contacts) const;
     bool   HasDataAt(int contacts) const;
-    double TouchingSec() const { return QpcToSec(m_touchingQpc); }
+    // Time with at least one contact down, a touch still in progress included.
+    double TouchingSec(int64_t now) const
+    {
+        const int64_t open = m_touchingSince && now > m_touchingSince ? now - m_touchingSince : 0;
+        return QpcToSec(m_touchingQpc + open);
+    }
 
     uint64_t TotalSamples() const { return m_totalSamples; }
     uint64_t TotalFrames()  const { return m_totalFrames; }

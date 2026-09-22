@@ -1187,13 +1187,13 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
     }
     if (!PadMeasured(ctx))
         o.P("**Session:** %.1f s, of which %.1f s with at least one contact\n\n",
-            sessionSec, t.TouchingSec());
+            sessionSec, t.TouchingSec(ctx.nowQpc));
     else if (t.TotalFrames())
         o.P("**Session:** %.1f s, of which %.1f s touching the screen and %.1f s touching the touch pad\n\n",
-            sessionSec, t.TouchingSec(), ctx.pad->TouchingSec());
+            sessionSec, t.TouchingSec(ctx.nowQpc), ctx.pad->TouchingSec(ctx.nowQpc));
     else
         o.P("**Session:** %.1f s, of which %.1f s with at least one finger on the touch pad\n\n",
-            sessionSec, ctx.pad->TouchingSec());
+            sessionSec, ctx.pad->TouchingSec(ctx.nowQpc));
 
     const bool padData = PadMeasured(ctx);
     const bool screenData = t.TotalFrames() > 0 || t.HidSeen();
@@ -1374,7 +1374,7 @@ static bool WriteJson(const std::wstring& path, const ExportContext& ctx)
     o.P("  \"generated\": \"%s\",\n", WideToUtf8(IsoNow()).c_str());
     o.P("  \"qpc_frequency\": %lld,\n", (long long)QpcFreq());
     o.P("  \"session_seconds\": %.3f,\n", QpcToSec(ctx.nowQpc - ctx.sessionStartQpc));
-    o.P("  \"touching_seconds\": %.3f,\n", t.TouchingSec());
+    o.P("  \"touching_seconds\": %.3f,\n", t.TouchingSec(ctx.nowQpc));
 
     o.S("  \"devices\": [\n");
     if (ctx.devices)

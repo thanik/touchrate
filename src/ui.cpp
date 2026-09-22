@@ -1270,7 +1270,7 @@ static void DrawFooter(App& app, const Rect2& box)
     char sess[96], rec[96];
     const Tracker& t = app.Shown();
     snprintf(sess, sizeof sess, "session %.0f s   touching %.0f s",
-             QpcToSec(app.nowQpc - app.startQpc), t.TouchingSec());
+             QpcToSec(app.nowQpc - app.startQpc), t.TouchingSec(app.nowQpc));
     const bool logging = app.tracker.LiveLogging();
     if (logging)
         snprintf(rec, sizeof rec, "* LOGGING %llu rows",
