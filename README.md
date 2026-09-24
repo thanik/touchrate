@@ -11,15 +11,27 @@ So I measured them myself, and built a tool to do it consistently.
 
 **[→ Skip to measurements for every panel I tested personally so far](results/README.md)**
 
-## Testing/Evaluating Tool
+## Touch screen, touch pad and pen analyzer
 
-A native Windows tool for evaluating a touch screen for rhythm games and other
-latency-sensitive input. It measures the digitizer's report rate and timing
-jitter, verifies 10-finger tracking, identifies the touch hardware by VID/PID,
-measures the monitor's real refresh rate and the app's own frame rate, and
-exports everything for offline analysis. A laptop's precision touch pad is
-measured too, kept apart from its touch screen, and so is a pen, with the
-pressure it reports.
+TouchRate is a native Windows tool for evaluating touch input for rhythm games
+and other latency-sensitive use. It measures three kinds of input: a touch
+screen, a laptop's precision touch pad and a pen. For each one it gives the
+report rate, timing jitter and worst gap. Each input is measured on its own, so
+a laptop that has all three never mixes their figures.
+
+- **Touch screen** — the rate at every contact count from one finger to ten, a
+  10-finger tracking test, delivery latency, touches the panel reported that
+  Windows never delivered, and a grid scan for dead zones.
+- **Touch pad** — read from its own HID reports, because Windows never passes a
+  touch pad to applications as touch. It is timed on the pad's own clock, and
+  also gets the rate at each contact count.
+- **Pen** — pressure, shown live and exported, along with tilt and the barrel
+  and eraser buttons, the rate with the tip down and while hovering, and
+  delivery latency.
+
+It also identifies each digitizer by VID/PID, measures the monitor's real
+refresh rate and its own frame rate, and exports everything for offline
+analysis.
 
 Direct3D 11 with a flip-model swap chain, immediate present and tearing allowed,
 so what you see on the panel is as close to the input as the display path
