@@ -178,7 +178,8 @@ static void ToggleFullscreen(App& app)
 
 // Window size for the layout's minimum client area, at the window's DPI,
 // limited to the monitor's work area so the window can always fit on it.
-static SIZE MinWindowSize(const App& app)
+// 'fits' says whether it had to be limited.
+static SIZE MinWindowSize(const App& app, bool* fits = nullptr)
 {
     int cw = 0, ch = 0;
     MinClientSize(app.rend, cw, ch);
@@ -191,9 +192,11 @@ static SIZE MinWindowSize(const App& app)
     MONITORINFO mi{};
     mi.cbSize = sizeof mi;
     GetMonitorInfoW(MonitorFromWindow(app.hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+    const LONG workW = mi.rcWork.right - mi.rcWork.left, workH = mi.rcWork.bottom - mi.rcWork.top;
+    if (fits) *fits = rc.right - rc.left <= workW && rc.bottom - rc.top <= workH;
     SIZE out;
-    out.cx = std::min<LONG>(rc.right - rc.left, mi.rcWork.right - mi.rcWork.left);
-    out.cy = std::min<LONG>(rc.bottom - rc.top, mi.rcWork.bottom - mi.rcWork.top);
+    out.cx = std::min<LONG>(rc.right - rc.left, workW);
+    out.cy = std::min<LONG>(rc.bottom - rc.top, workH);
     return out;
 }
 
@@ -228,8 +231,70 @@ static void RefreshMonitor(App& app, bool restartVblank)
     }
 }
 
+// The monitor the touch screen under test is mapped to. On any other screen no
+// touch can reach the grid scan, and every cell would read as dead.
+static HMONITOR TouchMonitor(const App& app)
+{
+    auto usable = [](const TouchDevice& d) {
+        return d.isPointerDevice && d.monitor && (d.usage == 0x04 || d.maxContacts > 1);
+    };
+    if (app.activeDevice >= 0 && (size_t)app.activeDevice < app.devices.size() &&
+        usable(app.devices[(size_t)app.activeDevice]))
+        return app.devices[(size_t)app.activeDevice].monitor;
+    // Prefer real hardware over the virtual digitizer Windows may expose.
+    for (const TouchDevice& d : app.devices)
+        if (usable(d) && (d.vid || d.pid)) return d.monitor;
+    for (const TouchDevice& d : app.devices)
+        if (usable(d)) return d.monitor;
+    return nullptr;
+}
+
+// The display the analyzer belongs on: a touch screen's, or with no touch
+// screen a pen display's. Real hardware only - the virtual digitizer touch
+// injection leaves behind must not pull the window anywhere. Null when no
+// digitizer is mapped to a display.
+static HMONITOR InputMonitor(const App& app)
+{
+    auto mapped = [](const TouchDevice& d) { return d.isPointerDevice && d.monitor && (d.vid || d.pid); };
+    for (const TouchDevice& d : app.devices)
+        if (mapped(d) && d.IsScreen() && (d.usage == 0x04 || d.maxContacts > 1)) return d.monitor;
+    for (const TouchDevice& d : app.devices)
+        if (mapped(d) && d.IsPen()) return d.monitor;
+    return nullptr;
+}
+
+// Centre the window on a display, keeping its size where it fits, and
+// maximize it there when the layout's minimum size does not fit the display -
+// a 1080p panel at 125% scaling, say. It is only maximized while it has the
+// focus, which maximizing would otherwise take.
+static void MoveToMonitor(App& app, HMONITOR m)
+{
+    if (!m || app.view.fullscreen || app.gridMode) return;
+    if (MonitorFromWindow(app.hwnd, MONITOR_DEFAULTTONEAREST) == m) return;
+    MONITORINFO mi{};
+    mi.cbSize = sizeof mi;
+    if (!GetMonitorInfoW(m, &mi)) return;
+    if (IsZoomed(app.hwnd)) ShowWindow(app.hwnd, SW_RESTORE);
+    RECT wr{};
+    GetWindowRect(app.hwnd, &wr);
+    const RECT& wa = mi.rcWork;
+    const LONG w = std::min(wr.right - wr.left, wa.right - wa.left);
+    const LONG h = std::min(wr.bottom - wr.top, wa.bottom - wa.top);
+    // Crossing to a display at another scale resizes the window on the way,
+    // through WM_DPICHANGED; the minimum is then measured at the new scale.
+    SetWindowPos(app.hwnd, nullptr, wa.left + (wa.right - wa.left - w) / 2, wa.top + (wa.bottom - wa.top - h) / 2,
+                 w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    EnforceMinimumSize(app);
+    bool fits = true;
+    MinWindowSize(app, &fits);
+    if (!fits && GetForegroundWindow() == app.hwnd) ShowWindow(app.hwnd, SW_MAXIMIZE);
+    RefreshMonitor(app, true);
+    app.Notify("Moved to the touch screen's display", Pal::textDim);
+}
+
 static void RefreshDevices(App& app, bool notify)
 {
+    const bool hadDisplay = InputMonitor(app) != nullptr;
     app.devices = EnumerateTouchDevices();
     app.activeDevice = FindDeviceByHandle(app.devices, app.tracker.LastSourceDevice());
     app.padDevice = FindDeviceByHandle(app.devices, app.padIn.Device());
@@ -241,6 +306,9 @@ static void RefreshDevices(App& app, bool notify)
                  app.devices.size(), app.devices.size() == 1 ? "" : "s");
         app.Notify(b, app.devices.empty() ? Pal::warn : Pal::good);
     }
+    // A touch screen plugged in while the analyzer runs, with none before:
+    // go to its display. The window opened on one already if it was there.
+    if (app.ready && !hadDisplay) MoveToMonitor(app, InputMonitor(app));
 }
 
 // ------------------------------------------------------------ raw input
@@ -439,24 +507,6 @@ static void OpenExportFolder(App& app)
 }
 
 // ---------------------------------------------------------------- grid scan
-
-// The monitor the touch screen under test is mapped to. On any other screen no
-// touch can reach the grid and every cell would read as dead.
-static HMONITOR TouchMonitor(const App& app)
-{
-    auto usable = [](const TouchDevice& d) {
-        return d.isPointerDevice && d.monitor && (d.usage == 0x04 || d.maxContacts > 1);
-    };
-    if (app.activeDevice >= 0 && (size_t)app.activeDevice < app.devices.size() &&
-        usable(app.devices[(size_t)app.activeDevice]))
-        return app.devices[(size_t)app.activeDevice].monitor;
-    // Prefer real hardware over the virtual digitizer Windows may expose.
-    for (const TouchDevice& d : app.devices)
-        if (usable(d) && (d.vid || d.pid)) return d.monitor;
-    for (const TouchDevice& d : app.devices)
-        if (usable(d)) return d.monitor;
-    return nullptr;
-}
 
 static void SetGridMode(App& app, bool on)
 {
@@ -854,8 +904,18 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     wc.lpszClassName = L"TouchRateWindow";
     if (!RegisterClassExW(&wc)) return 1;
 
+    // Devices first: the window opens on the display the touch screen is
+    // mapped to, which need not be the primary one, so that it gets that
+    // display's scale from the start.
+    RefreshDevices(app, false);
     RECT wa{ 0, 0, 1680, 980 };
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+    if (HMONITOR home = InputMonitor(app))
+    {
+        MONITORINFO mi{};
+        mi.cbSize = sizeof mi;
+        if (GetMonitorInfoW(home, &mi)) wa = mi.rcWork;
+    }
     int ww = std::min<int>(1680, wa.right - wa.left - 40);
     int wh = std::min<int>(1000, wa.bottom - wa.top - 40);
     int wx = wa.left + ((wa.right - wa.left) - ww) / 2;
@@ -886,12 +946,15 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     // window was created before that, so bring it up to the minimum now.
     app.ready = true;
     EnforceMinimumSize(app);
+    // A display too small for the layout's minimum - 1080p at 125%, say - gets
+    // the whole of its work area.
+    bool fits = true;
+    MinWindowSize(app, &fits);
 
-    ShowWindow(app.hwnd, SW_SHOW);
+    ShowWindow(app.hwnd, fits ? SW_SHOW : SW_SHOWMAXIMIZED);
     UpdateWindow(app.hwnd);
     SetForegroundWindow(app.hwnd);
 
-    RefreshDevices(app, false);
     app.source = DefaultSource(app);
     RefreshMonitor(app, true);
     if (opt.fullscreen) ToggleFullscreen(app);

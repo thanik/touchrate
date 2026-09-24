@@ -264,9 +264,12 @@ static void DrawHeader(App& app, const Rect2& box)
     char vb[32] = "";
     if (d.version) snprintf(vb, sizeof vb, "rev 0x%04X", d.version);
     char mb[64] = "";
+    // Before any report the shown device is a guess; once reports arrive it is
+    // not "no reports", even when their device could not be told apart.
     const bool penSeen = app.pen.TotalFrames() > 0 || app.pen.HoverReports() > 0;
+    const bool screenSeen = app.activeDevice >= 0 || app.tracker.TotalFrames() > 0;
     if (pad ? !app.padIn.Seen() : pen ? (!penSeen && app.devices.size() > 1)
-                                      : (app.activeDevice < 0 && app.devices.size() > 1))
+                                      : (!screenSeen && app.devices.size() > 1))
         snprintf(mb, sizeof mb, pad ? "(no reports yet - touch the pad)"
                               : pen ? "(no reports yet - bring the pen to the screen)"
                                     : "(no reports yet - touch the screen)");
@@ -489,6 +492,11 @@ static void DrawCanvas(App& app, const Rect2& box)
     r.ClearClip();
 }
 
+static bool Overlaps(const Rect2& a, const Rect2& b)
+{
+    return a.x < b.r() && b.x < a.r() && a.y < b.b() && b.y < a.b();
+}
+
 // Contacts are drawn after every panel so a finger resting on the stats column
 // is still visible; the translucent panels alone would dim it too far.
 static void DrawContacts(App& app, const Rect2& box)
@@ -496,7 +504,12 @@ static void DrawContacts(App& app, const Rect2& box)
     Renderer& r = app.rend;
     Tracker& t = app.tracker;
     const float s = r.Scale();
+    const float fh = r.FontHeight(F_TINY);
 
+    // Rings and slot badges first, so every readout can be placed clear of
+    // all of them: fingers sit closer together than a readout is wide.
+    float rads[kMaxSlots] = {};
+    std::vector<Rect2> taken;
     for (int i = 0; i < kMaxSlots; ++i)
     {
         const Contact& c = t.Slot(i);
@@ -508,6 +521,7 @@ static void DrawContacts(App& app, const Rect2& box)
 
         float rad = 26 * s;
         if (c.cw > 0) rad = Clampf(std::max(c.cw, c.ch) * 0.5f, 12 * s, 90 * s);
+        rads[i] = rad;
         r.Glow(c.x, c.y, rad * 1.9f, col.WithA(0.20f));
         r.Disc(c.x, c.y, rad * 0.30f, col.WithA(0.98f));
         r.RingShape(c.x, c.y, rad, col.WithA(0.92f));
@@ -518,24 +532,59 @@ static void DrawContacts(App& app, const Rect2& box)
         // Slot badge stays wherever the finger is; it is one glyph and is what
         // identifies the contact.
         char id[8]; snprintf(id, sizeof id, "%d", i + 1);
-        r.TextCenter(F_HEAD, c.x, c.y - rad - r.FontHeight(F_HEAD) - 4 * s, col, "%s", id);
+        const float by = c.y - rad - r.FontHeight(F_HEAD) - 4 * s;
+        r.TextCenter(F_HEAD, c.x, by, col, "%s", id);
+        // With a margin, so a readout does not butt up against another
+        // finger and read as that one's.
+        const float bw = r.TextW(F_HEAD, id), m = 8 * s;
+        taken.push_back(Rect2{ c.x - rad - m, c.y - rad - m, (rad + m) * 2, (rad + m) * 2 });
+        taken.push_back(Rect2{ c.x - bw * 0.5f - m * 0.5f, by, bw + m, r.FontHeight(F_HEAD) });
+    }
 
-        // The multi-line readout would sit on top of panel figures and make
-        // both unreadable, so it is shown only over open canvas.
-        if (!app.freeArea.Contains(c.x, c.y)) continue;
+    // Each readout goes beside its finger, on whichever side is clear of the
+    // other rings, badges and readouts; with no clear side it is left out, and
+    // its figures are still in the per-contact table. A readout is shown only
+    // over open canvas, where it cannot sit on top of panel figures.
+    for (int i = 0; i < kMaxSlots; ++i)
+    {
+        const Contact& c = t.Slot(i);
+        if (!c.active || !app.freeArea.Contains(c.x, c.y)) continue;
+        const float rad = rads[i];
 
-        float lx = c.x + rad + 8 * s, ly = c.y - r.FontHeight(F_TINY);
-        if (lx + 190 * s > app.freeArea.r()) lx = c.x - rad - 8 * s - 190 * s;
-        r.Textf(F_TINY, lx, ly, Pal::text, "%.0f, %.0f px", c.x, c.y);
-        if (c.instHz > 0)
-            r.Textf(F_TINY, lx, ly + r.FontHeight(F_TINY) * 1.2f, RateColor(c.instHz),
-                    "%.0f Hz  id %u", c.instHz, c.pointerId);
-        else
-            r.Textf(F_TINY, lx, ly + r.FontHeight(F_TINY) * 1.2f, Pal::textFaint,
-                    "id %u", c.pointerId);
-        if (c.pressure >= 0)
-            r.Textf(F_TINY, lx, ly + r.FontHeight(F_TINY) * 2.4f, Pal::textDim,
-                    "p %.2f", c.pressure);
+        char l1[48], l2[48], l3[24] = "";
+        snprintf(l1, sizeof l1, "%.0f, %.0f px", c.x, c.y);
+        if (c.instHz > 0) snprintf(l2, sizeof l2, "%.0f Hz  id %u", c.instHz, c.pointerId);
+        else              snprintf(l2, sizeof l2, "id %u", c.pointerId);
+        if (c.pressure >= 0) snprintf(l3, sizeof l3, "p %.2f", c.pressure);
+        const int lines = l3[0] ? 3 : 2;
+        const float lw = std::max({ r.TextW(F_TINY, l1), r.TextW(F_TINY, l2), r.TextW(F_TINY, l3) });
+        const float lh = fh * 1.2f * (lines - 1) + fh;
+
+        const Rect2 sides[] = {
+            { c.x + rad + 8 * s, c.y - fh, lw, lh },             // right
+            { c.x - rad - 8 * s - lw, c.y - fh, lw, lh },        // left
+            { c.x - lw * 0.5f, c.y + rad + 10 * s, lw, lh },     // below, past the ring's margin
+        };
+        const Rect2* at = nullptr;
+        for (const Rect2& cand : sides)
+        {
+            if (cand.x < app.freeArea.x || cand.r() > app.freeArea.r() ||
+                cand.y < app.freeArea.y || cand.b() > app.freeArea.b()) continue;
+            // Every side keeps clear of its own ring and badge by construction.
+            bool clear = true;
+            for (const Rect2& o : taken)
+                if (Overlaps(cand, o)) { clear = false; break; }
+            if (clear) { at = &cand; break; }
+        }
+        if (!at) continue;
+        taken.push_back(*at);
+
+        // In the finger's colour, since a readout below or to the left can
+        // land nearer a neighbour than its own finger.
+        const float lx = at->x, ly = at->y;
+        r.Text(F_TINY, lx, ly, SlotColor(i), l1);
+        r.Text(F_TINY, lx, ly + fh * 1.2f, c.instHz > 0 ? RateColor(c.instHz) : Pal::textFaint, l2);
+        if (l3[0]) r.Text(F_TINY, lx, ly + fh * 2.4f, Pal::textDim, l3);
     }
 }
 
@@ -1210,7 +1259,11 @@ static void DrawHistogram(App& app, const Rect2& box)
         double ms = msLo + (msHi - msLo) * k / ticks;
         float x = xOf(ms);
         r.FillRect(Rect2{ std::round(x), plot.b(), 1, 4 * s }, Pal::edge);
-        r.TextCenter(F_TINY, x, plot.b() + 6 * s, Pal::textFaint, "%.2f", ms);
+        // The last label ends at the block's edge rather than centring past it.
+        char lab[24];
+        snprintf(lab, sizeof lab, "%.2f", ms);
+        const float lw = r.TextW(F_TINY, lab);
+        r.Text(F_TINY, std::min(x - lw * 0.5f, box.r() - 6 * s - lw), plot.b() + 6 * s, Pal::textFaint, lab);
     }
     // The unit sits in the gutter on the tick row; a row of its own below
     // would run past the block.

@@ -62,6 +62,12 @@ build\TouchRate.exe
 | `--export-dir=PATH` | Where `[S]` writes files (default `<exe dir>\exports`) |
 | `--log` | Start streaming samples to CSV immediately |
 
+The window opens on the display the touch screen is mapped to — or, with no
+touch screen, a pen display — rather than the primary one, and fills that
+display when it is too small for the full layout (1080p at 125% scaling, for
+example). A touch screen plugged in while TouchRate runs, when none was
+connected before, brings the window over to its display.
+
 ### Keys
 
 | Key | Action |
