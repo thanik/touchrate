@@ -77,6 +77,7 @@ HidTouchDecoder::Dev* HidTouchDecoder::Get(HANDLE h)
     UINT sz = sizeof info;
     if (GetRawInputDeviceInfoW(h, RIDI_DEVICEINFO, &info, &sz) == (UINT)-1) return &d;
     if (info.dwType != RIM_TYPEHID || info.hid.usUsagePage != kPageDigitizer) return &d;
+    d.pen = info.hid.usUsage == 0x02;
     if (info.hid.usUsage != 0x04 && info.hid.usUsage != 0x05) return &d;   // touch screen / pad
     d.desc.pad = info.hid.usUsage == 0x05;
 
@@ -167,6 +168,12 @@ HidTouchDecoder::Dev* HidTouchDecoder::Get(HANDLE h)
     d.desc.valid = true;
     d.ok = true;
     return &d;
+}
+
+bool HidTouchDecoder::IsPen(HANDLE device)
+{
+    const Dev* d = Get(device);
+    return d && d->pen;
 }
 
 bool HidTouchDecoder::Describe(HANDLE device, HidDescriptorInfo& out)

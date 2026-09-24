@@ -67,6 +67,7 @@ namespace Pal
     const Color warn      = Rgb(0xFFC24B);
     const Color bad       = Rgb(0xFF5E6B);
     const Color hero      = Rgb(0xFFFFFF);
+    const Color pen       = Rgb(0xF2E2C0);   // a pen's tip and ink, apart from the finger colours
 }
 
 // 20 well-separated contact colors (first 10 are the "ten finger" set)

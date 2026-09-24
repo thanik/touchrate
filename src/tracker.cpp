@@ -7,9 +7,9 @@ const char* SampleKindName(uint8_t k)
 
 // ------------------------------------------------------------------ lifecycle
 
-void Tracker::Init(size_t exportCapacity, bool pad)
+void Tracker::Init(size_t exportCapacity, Source source)
 {
-    m_pad = pad;
+    m_source = source;
     if (exportCapacity < 1000) exportCapacity = 1000;
     m_recs.assign(exportCapacity, ExportRec{});
     m_recHead = m_recCount = 0;
@@ -26,6 +26,12 @@ void Tracker::Init(size_t exportCapacity, bool pad)
     for (int i = 0; i <= kMaxSlots; ++i) m_intervalHistByCount[i].Init(0.0, 0.1, 300);
     m_hzRing.Init(2048);
     m_scratch.reserve(512 * 16);
+
+    m_hoverRate.Init();
+    m_hoverHist.Init(0.0, 0.1, 300);
+    m_pressureRing.Init(2048);
+    m_levelSeen.assign(1025, 0);
+    m_penScratch.reserve(512);
 }
 
 void Tracker::ResetStats()
@@ -64,6 +70,17 @@ void Tracker::ResetStats()
     m_recDropped = 0;
     m_hmSeen = false;
     for (Contact& c : m_slots) { c.dt.Reset(); c.samples = 0; c.rate.Reset(); c.pathLenPx = 0; }
+
+    m_hidPenHeld = 0;
+    m_pressure.Reset(); m_pressureAtDown.Reset(); m_tiltX.Reset(); m_tiltY.Reset();
+    std::fill(m_levelSeen.begin(), m_levelSeen.end(), (uint8_t)0);
+    m_pressureLevels = 0;
+    m_pressureRing.Reset();
+    m_rotationSeen = false;
+    m_penFlagsSeen = 0;
+    m_hoverIntervalMs.Reset(); m_hoverHist.Reset(); m_hoverRate.Reset();
+    m_hoverReports = 0;
+    m_lastHoverDevQpc = 0;
 }
 
 void Tracker::ClearInk()
@@ -111,6 +128,7 @@ void Tracker::ReleaseSlot(int slot, int64_t qpc, bool genuine)
     if (!c.active) return;
     c.active = false;
     c.upQpc = qpc;
+    if (IsPen()) m_pressureRing.Push(-1.f);   // a break in the pressure trace
     if (genuine)
     {
         if (c.downQpc) m_dwellMs.Add(QpcToMs(qpc - c.downQpc));
@@ -133,12 +151,9 @@ int Tracker::HandlePointerMessage(UINT msg, WPARAM wParam, int64_t hostQpc)
     ++m_messages;
     m_msgRate.Tick(hostQpc);
 
-    POINTER_INPUT_TYPE type = PT_POINTER;
-    if (GetPointerType(pid, &type) && type != PT_TOUCH && type != PT_PEN)
-        return 0;   // ignore mouse promoted into the pointer stack
-
+    // The window procedure routes each pointer type to its own tracker.
     const bool isUp = (msg == WM_POINTERUP);
-    int accepted = IngestFrames(pid, hostQpc, isUp);
+    int accepted = IsPen() ? IngestPenFrames(pid, hostQpc, isUp) : IngestFrames(pid, hostQpc, isUp);
 
     // Skipping the rest of an input frame is safe for moves, where the frame
     // history already carried every contact. It is not safe around a down or an
@@ -158,6 +173,33 @@ constexpr double kSettleMs      = 250.0;  // wait this long after lift before ju
 constexpr double kMatchGraceMs  = 150.0;  // pointer input may trail the raw report slightly
 constexpr size_t kMaxTracks     = 64;
 constexpr size_t kMaxUndelivered = 4096;
+constexpr double kPenNearMs     = 500.0;  // touch is held back this close to pen input
+constexpr double kHoverStaleMs  = 200.0;  // a hovering pen that stops reporting has left
+constexpr double kHoverGapMs    = 500.0;  // longer between hover reports is not an interval
+
+SampleExtras TouchExtras(const POINTER_TOUCH_INFO& ti)
+{
+    SampleExtras ex;
+    if (ti.touchMask & TOUCH_MASK_PRESSURE) ex.pressure = (float)ti.pressure / 1024.0f;
+    if (ti.touchMask & TOUCH_MASK_CONTACTAREA)
+    {
+        ex.cw = (float)(ti.rcContact.right - ti.rcContact.left);
+        ex.ch = (float)(ti.rcContact.bottom - ti.rcContact.top);
+    }
+    if (ti.touchMask & TOUCH_MASK_ORIENTATION) ex.orient = (float)ti.orientation;
+    return ex;
+}
+
+SampleExtras PenExtras(const POINTER_PEN_INFO& pen)
+{
+    SampleExtras ex;
+    if (pen.penMask & PEN_MASK_PRESSURE) ex.pressure = (float)std::min<UINT32>(pen.pressure, 1024) / 1024.0f;
+    if (pen.penMask & PEN_MASK_ROTATION) ex.rotation = (float)pen.rotation;
+    if (pen.penMask & PEN_MASK_TILT_X) ex.tiltX = (int8_t)std::clamp<INT32>(pen.tiltX, -90, 90);
+    if (pen.penMask & PEN_MASK_TILT_Y) ex.tiltY = (int8_t)std::clamp<INT32>(pen.tiltY, -90, 90);
+    ex.penFlags = (uint8_t)(pen.penFlags & (PEN_FLAG_BARREL | PEN_FLAG_INVERTED | PEN_FLAG_ERASER));
+    return ex;
+}
 
 double EdgeDistance(const RECT& r, float x, float y)
 {
@@ -317,12 +359,25 @@ void Tracker::MatchPointerToHid(float screenX, float screenY, int64_t hostQpc)
     }
 }
 
+// From shortly before the contact started until now: Windows keeps touch back
+// for a moment after the pen goes, and a pen that arrives cancels a touch in
+// progress.
+bool Tracker::PenExcuses(const HidTrack& t) const
+{
+    return m_penSeenQpc && m_penSeenQpc >= t.firstQpc - MsToQpc(kPenNearMs);
+}
+
 void Tracker::FinalizeHidTrack(const HidTrack& t)
 {
     if (t.offWindow)
     {
         ++m_hidOffWindow;
         if (t.edgeSwipeBlocked) ++m_hidOffWindowBlocked;
+        return;
+    }
+    if (!t.delivered && PenExcuses(t))
+    {
+        ++m_hidPenHeld;
         return;
     }
 
@@ -444,6 +499,117 @@ int Tracker::IngestFrames(uint32_t pointerId, int64_t hostQpc, bool isUp)
     return accepted;
 }
 
+// A pen is one pointer, so its history holds one sample per input frame.
+int Tracker::IngestPenFrames(uint32_t pointerId, int64_t hostQpc, bool isUp)
+{
+    UINT32 n = 0;
+    if (m_useHistory && GetPointerPenInfoHistory(pointerId, &n, nullptr) && n > 0)
+    {
+        n = std::min<UINT32>(n, 512);
+        if (m_penScratch.size() < n) m_penScratch.resize(n);
+        if (!GetPointerPenInfoHistory(pointerId, &n, m_penScratch.data())) n = 0;
+    }
+    else n = 0;
+    if (n == 0)
+    {
+        if (m_penScratch.empty()) m_penScratch.resize(1);
+        if (!GetPointerPenInfo(pointerId, m_penScratch.data())) return 0;
+        n = 1;
+    }
+    return HandlePenHistory(m_penScratch.data(), n, hostQpc, isUp);
+}
+
+// A pen reports while it hovers as well as while it touches. Only the frames
+// with the tip down are measured, as a finger's are; a hover frame moves the
+// hover position and times the rate in the air.
+int Tracker::HandlePenHistory(const POINTER_PEN_INFO* newestFirst, uint32_t n, int64_t hostQpc, bool isUp)
+{
+    int accepted = 0;
+    for (int e = (int)n - 1; e >= 0; --e)
+    {
+        const POINTER_PEN_INFO& pen = newestFirst[e];
+        const POINTER_INFO& pi = pen.pointerInfo;
+        const uint32_t fid = pi.frameId;
+        if (m_haveFrameId && (int32_t)(fid - m_maxFrameId) <= 0)
+            continue;                       // already counted this frame
+        m_maxFrameId = fid;
+        m_haveFrameId = true;
+
+        int64_t devQpc = (int64_t)pi.PerformanceCount;
+        if (devQpc <= 0) devQpc = hostQpc;
+        const bool newest = (e == 0);
+
+        // Tip up with no stroke in progress: hovering. With a stroke still
+        // open it is the lift, even if the up flag itself went missing.
+        const bool tip = (pi.pointerFlags & (POINTER_FLAG_INCONTACT | POINTER_FLAG_DOWN)) != 0;
+        const bool stroke = FindSlot(pi.pointerId) >= 0;
+        if (!tip && !stroke)
+        {
+            AcceptHover(pen, devQpc, hostQpc);
+            continue;
+        }
+
+        ++m_totalFrames;
+        m_frameRate.Tick(hostQpc);
+        AddFrameInterval(devQpc);
+        AcceptSample(pi, PenExtras(pen), hostQpc, !newest, !tip || (isUp && newest));
+        ++accepted;
+        m_lastFrameContacts = 1;
+        EndFrame(devQpc);
+        m_lastHoverDevQpc = 0;              // a hover interval never spans a stroke
+        m_lastPenQpc = hostQpc;
+    }
+    RecountLive(hostQpc);
+    return accepted;
+}
+
+void Tracker::AcceptHover(const POINTER_PEN_INFO& pen, int64_t devQpc, int64_t hostQpc)
+{
+    const POINTER_INFO& pi = pen.pointerInfo;
+    const SampleExtras ex = PenExtras(pen);
+    ++m_hoverReports;
+    m_hoverRate.Tick(hostQpc);
+    if (m_lastHoverDevQpc)
+    {
+        const double ms = QpcToMs(devQpc - m_lastHoverDevQpc);
+        if (ms > 0.0 && ms < kHoverGapMs)
+        {
+            m_hoverIntervalMs.Add(ms);
+            m_hoverHist.Add(ms);
+        }
+    }
+    m_lastHoverDevQpc = devQpc;
+
+    m_hover.pointerId = pi.pointerId;
+    m_hover.x = (float)(pi.ptPixelLocationRaw.x - m_clientOrigin.x);
+    m_hover.y = (float)(pi.ptPixelLocationRaw.y - m_clientOrigin.y);
+    m_hover.tiltX = ex.tiltX;
+    m_hover.tiltY = ex.tiltY;
+    m_hover.penFlags = ex.penFlags;
+    m_hover.hostQpc = hostQpc;
+    m_penFlagsSeen |= ex.penFlags;
+    // Names the pen in the header before it has drawn anything.
+    m_lastSourceDevice = pi.sourceDevice;
+    m_lastPointerType = pi.pointerType;
+}
+
+void Tracker::PointerLeft(uint32_t pointerId)
+{
+    if (m_hover.hostQpc && m_hover.pointerId == pointerId) m_hover.hostQpc = 0;
+    m_lastHoverDevQpc = 0;
+}
+
+void Tracker::CountHidReport(int64_t now)
+{
+    ++m_hidReports;
+    m_hidRate.Tick(now);
+}
+
+bool Tracker::Hovering(int64_t now) const
+{
+    return m_hover.hostQpc && m_contactsNow == 0 && now - m_hover.hostQpc < MsToQpc(kHoverStaleMs);
+}
+
 // Live contacts from slot state, and the touching time and contact-count
 // records that depend on it.
 void Tracker::RecountLive(int64_t hostQpc)
@@ -495,7 +661,12 @@ void Tracker::EndFrame(int64_t devQpc)
 void Tracker::AcceptSample(const POINTER_TOUCH_INFO& ti, int64_t hostQpc,
                            bool fromHistory, bool isUpFrame)
 {
-    const POINTER_INFO& pi = ti.pointerInfo;
+    AcceptSample(ti.pointerInfo, TouchExtras(ti), hostQpc, fromHistory, isUpFrame);
+}
+
+void Tracker::AcceptSample(const POINTER_INFO& pi, const SampleExtras& ex, int64_t hostQpc,
+                           bool fromHistory, bool isUpFrame)
+{
     const uint32_t pid = pi.pointerId;
     const bool flagDown = (pi.pointerFlags & POINTER_FLAG_DOWN) != 0;
     const bool flagUp = (pi.pointerFlags & POINTER_FLAG_UP) != 0;
@@ -538,15 +709,9 @@ void Tracker::AcceptSample(const POINTER_TOUCH_INFO& ti, int64_t hostQpc,
     ++c.samples;
     c.rate.Tick(hostQpc);
 
-    float pressure = -1, cw = -1, ch = -1, orient = -1;
-    if (ti.touchMask & TOUCH_MASK_PRESSURE) pressure = (float)ti.pressure / 1024.0f;
-    if (ti.touchMask & TOUCH_MASK_CONTACTAREA)
-    {
-        cw = (float)(ti.rcContact.right - ti.rcContact.left);
-        ch = (float)(ti.rcContact.bottom - ti.rcContact.top);
-    }
-    if (ti.touchMask & TOUCH_MASK_ORIENTATION) orient = (float)ti.orientation;
-    c.pressure = pressure; c.cw = cw; c.ch = ch; c.orient = orient;
+    c.pressure = ex.pressure; c.cw = ex.cw; c.ch = ex.ch; c.orient = ex.orient;
+    c.rotation = ex.rotation; c.tiltX = ex.tiltX; c.tiltY = ex.tiltY; c.penFlags = ex.penFlags;
+    if (IsPen()) RecordPen(ex, kind, started);
 
     // Latency is only meaningful for the sample that triggered this message;
     // older history entries were already sitting in the queue.
@@ -583,8 +748,8 @@ void Tracker::AcceptSample(const POINTER_TOUCH_INFO& ti, int64_t hostQpc,
     if (fromHistory) ++m_historySamples;
     m_sampleRate.Tick(hostQpc);
 
-    c.PushTrail(cx, cy, devQpc, pressure, fromHistory ? 1 : 0);
-    PushInk(cx, cy, slot, fromHistory);
+    c.PushTrail(cx, cy, devQpc, ex.pressure, fromHistory ? 1 : 0);
+    PushInk(cx, cy, slot, fromHistory, ex.pressure);
 
     ExportRec r;
     r.deviceQpc = devQpc;
@@ -595,7 +760,8 @@ void Tracker::AcceptSample(const POINTER_TOUCH_INFO& ti, int64_t hostQpc,
     r.pxX = pi.ptPixelLocation.x;  r.pxY = pi.ptPixelLocation.y;
     r.rawX = pi.ptPixelLocationRaw.x; r.rawY = pi.ptPixelLocationRaw.y;
     r.hmX = pi.ptHimetricLocationRaw.x; r.hmY = pi.ptHimetricLocationRaw.y;
-    r.pressure = pressure; r.cw = cw; r.ch = ch; r.orient = orient;
+    r.pressure = ex.pressure; r.cw = ex.cw; r.ch = ex.ch; r.orient = ex.orient;
+    r.rotation = ex.rotation; r.tiltX = ex.tiltX; r.tiltY = ex.tiltY; r.penFlags = ex.penFlags;
     r.dtMs = (float)dtMs;
     r.latencyMs = latency;
     r.slot = (uint8_t)slot;
@@ -612,6 +778,29 @@ void Tracker::AcceptSample(const POINTER_TOUCH_INFO& ti, int64_t hostQpc,
         MatchPointerToHid((float)pi.ptPixelLocationRaw.x, (float)pi.ptPixelLocationRaw.y, hostQpc);
 
     if (kind == SK_UP) ReleaseSlot(slot, devQpc);
+}
+
+// The pen's pressure, tilt and buttons from one sample of a stroke. The lift
+// reads 0 and is left out; the break it makes is marked when the slot is freed.
+void Tracker::RecordPen(const SampleExtras& ex, uint8_t kind, bool started)
+{
+    m_penFlagsSeen |= ex.penFlags;
+    if (kind == SK_UP) return;
+    if (ex.pressure >= 0)
+    {
+        m_pressure.Add(ex.pressure);
+        if (started) m_pressureAtDown.Add(ex.pressure);
+        const long level = std::lround(ex.pressure * 1024.0);
+        if (level >= 0 && (size_t)level < m_levelSeen.size() && !m_levelSeen[(size_t)level])
+        {
+            m_levelSeen[(size_t)level] = 1;
+            ++m_pressureLevels;
+        }
+        m_pressureRing.Push(ex.pressure);
+    }
+    if (ex.tiltX != kNoTilt) m_tiltX.Add(ex.tiltX);
+    if (ex.tiltY != kNoTilt) m_tiltY.Add(ex.tiltY);
+    if (ex.rotation >= 0) m_rotationSeen = true;
 }
 
 // Interval, stroke start and path for one sample of a contact - the part
@@ -663,10 +852,11 @@ double Tracker::AdvanceContact(Contact& c, uint8_t kind, int64_t devQpc, float x
     return dtMs;
 }
 
-void Tracker::PushInk(float x, float y, int slot, bool fromHistory)
+void Tracker::PushInk(float x, float y, int slot, bool fromHistory, float pressure)
 {
     if (m_ink.empty()) return;
-    m_ink[m_inkHead] = InkPt{ x, y, (uint8_t)slot, (uint8_t)(fromHistory ? 1 : 0) };
+    m_ink[m_inkHead] = InkPt{ x, y, (uint8_t)slot, (uint8_t)(fromHistory ? 1 : 0),
+                              (uint8_t)std::lround(Clampd(pressure, 0.0, 1.0) * 255.0) };
     m_inkHead = (m_inkHead + 1) % m_ink.size();
     if (m_inkCount < m_ink.size()) ++m_inkCount;
     ++m_inkTotal;
@@ -851,6 +1041,11 @@ double Tracker::RateHz() const
     return PeakCentreHz(m_intervalHist, PeakReachMs(m_intervalHist, m_clockResMs));
 }
 
+double Tracker::HoverRateHz() const
+{
+    return PeakCentreHz(m_hoverHist, PeakReachMs(m_hoverHist, m_clockResMs));
+}
+
 // ------------------------------------------------------- rate by contact count
 
 static int ClampCount(int n) { return (n < 0 || n > kMaxSlots) ? 0 : n; }
@@ -923,7 +1118,10 @@ void Tracker::PushRecord(const ExportRec& r)
     m_recs[m_recHead] = r;
     m_recHead = (m_recHead + 1) % m_recs.size();
     if (m_recCount < m_recs.size()) ++m_recCount;
-    if (m_log) { if (m_pad) WritePadLogRow(r); else WriteLogRow(r); }
+    if (!m_log) return;
+    if (IsPad()) WritePadLogRow(r);
+    else if (IsPen()) WritePenLogRow(r);
+    else WriteLogRow(r);
 }
 
 // --------------------------------------------------------------- live logging
@@ -939,13 +1137,41 @@ const char* const kPadCsvHeader =
     "seq,kind,contact_id,slot,frame,device_qpc,device_ms,host_qpc,host_ms,"
     "dt_ms,inst_hz,x,y\n";
 
+// pressure is 0..1; pressure_level is the same as the 0..1024 integer Windows
+// passes on, which is what to count distinct levels by.
+const char* const kPenCsvHeader =
+    "seq,kind,pointer_id,frame_id,from_history,device_qpc,device_ms,host_qpc,host_ms,"
+    "dt_ms,inst_hz,latency_ms,client_x,client_y,screen_x,screen_y,raw_screen_x,raw_screen_y,"
+    "himetric_x,himetric_y,predict_dx,predict_dy,"
+    "pressure,pressure_level,tilt_x,tilt_y,rotation,barrel,inverted,eraser\n";
+
+int FormatPenCsvRow(char* buf, size_t n, uint64_t seq, const ExportRec& r, int64_t t0)
+{
+    char pr[32] = ",", tx[8] = "", ty[8] = "", rot[16] = "";
+    if (r.pressure >= 0) snprintf(pr, sizeof pr, "%.4f,%ld", r.pressure, std::lround(r.pressure * 1024.0));
+    if (r.tiltX != kNoTilt) snprintf(tx, sizeof tx, "%d", r.tiltX);
+    if (r.tiltY != kNoTilt) snprintf(ty, sizeof ty, "%d", r.tiltY);
+    if (r.rotation >= 0) snprintf(rot, sizeof rot, "%.0f", r.rotation);
+    const double hz = r.dtMs > 0 ? 1000.0 / r.dtMs : 0.0;
+    const int len = snprintf(buf, n,
+        "%llu,%s,%u,%u,%u,%lld,%.6f,%lld,%.6f,%.6f,%.3f,%.6f,"
+        "%.2f,%.2f,%d,%d,%d,%d,%d,%d,%d,%d,%s,%s,%s,%s,%d,%d,%d\n",
+        (unsigned long long)seq, SampleKindName(r.kind), r.pointerId, r.frameId, r.fromHistory,
+        (long long)r.deviceQpc, QpcToMs(r.deviceQpc - t0), (long long)r.hostQpc, QpcToMs(r.hostQpc - t0),
+        r.dtMs, hz, r.latencyMs, r.x, r.y, r.pxX, r.pxY, r.rawX, r.rawY, r.hmX, r.hmY,
+        r.pxX - r.rawX, r.pxY - r.rawY, pr, tx, ty, rot,
+        (r.penFlags & PEN_FLAG_BARREL) ? 1 : 0, (r.penFlags & PEN_FLAG_INVERTED) ? 1 : 0,
+        (r.penFlags & PEN_FLAG_ERASER) ? 1 : 0);
+    return len < 0 ? 0 : std::min(len, (int)n - 1);
+}
+
 bool Tracker::StartLiveLog(const std::wstring& path)
 {
     StopLiveLog();
     FILE* f = nullptr;
     if (_wfopen_s(&f, path.c_str(), L"wb") != 0 || !f) return false;
     setvbuf(f, nullptr, _IOFBF, 1 << 20);
-    fputs(m_pad ? kPadCsvHeader : kCsvHeader, f);
+    fputs(IsPad() ? kPadCsvHeader : IsPen() ? kPenCsvHeader : kCsvHeader, f);
     m_log = f;
     m_logPath = path;
     m_logRows = 0;
@@ -975,6 +1201,14 @@ void Tracker::WriteLogRow(const ExportRec& r)
     if (r.pressure >= 0) fprintf(m_log, "%.4f,", r.pressure); else fputs(",", m_log);
     if (r.cw >= 0) fprintf(m_log, "%.1f,%.1f,", r.cw, r.ch); else fputs(",,", m_log);
     if (r.orient >= 0) fprintf(m_log, "%.1f\n", r.orient); else fputs("\n", m_log);
+    ++m_logRows;
+}
+
+void Tracker::WritePenLogRow(const ExportRec& r)
+{
+    char b[512];
+    const int n = FormatPenCsvRow(b, sizeof b, m_logRows, r, 0);
+    fwrite(b, 1, (size_t)n, m_log);
     ++m_logRows;
 }
 

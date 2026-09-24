@@ -40,6 +40,8 @@ struct ExportContext
     const Tracker*                  pad = nullptr;    // the touch pad, reported only if it was used
     const TouchPadInput*            padIn = nullptr;
     int                             padDevice = -1;
+    const Tracker*                  pen = nullptr;    // a pen, reported only if it drew
+    int                             penDevice = -1;
     PresentInfo                     present;
     int64_t                         sessionStartQpc = 0;
     int64_t                         nowQpc = 0;
@@ -57,6 +59,7 @@ struct ExportResult
     uint64_t                  sampleBytesRaw = 0;   // sample CSV before compression
     uint64_t                  sampleBytesGz = 0;    // and after
     uint64_t                  padSampleRows = 0;
+    uint64_t                  penSampleRows = 0;
 };
 
 ExportResult ExportAll(const ExportContext& ctx, const std::wstring& baseDir);

@@ -6,8 +6,8 @@ namespace {
 // grow the queue without bound.
 constexpr size_t kMaxQueued = 1 << 16;
 
-// Digitizer usages: touch screen, touch pad, and the pen and generic digitizer
-// collections, which the decoder ignores.
+// Digitizer usages: touch screen, touch pad, the pen, whose reports are only
+// counted, and the generic digitizer collection, which the decoder ignores.
 constexpr USHORT kUsages[] = { 0x04, 0x05, 0x01, 0x02 };
 
 } // namespace

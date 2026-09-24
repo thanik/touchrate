@@ -18,7 +18,8 @@ latency-sensitive input. It measures the digitizer's report rate and timing
 jitter, verifies 10-finger tracking, identifies the touch hardware by VID/PID,
 measures the monitor's real refresh rate and the app's own frame rate, and
 exports everything for offline analysis. A laptop's precision touch pad is
-measured too, kept apart from its touch screen.
+measured too, kept apart from its touch screen, and so is a pen, with the
+pressure it reports.
 
 Direct3D 11 with a flip-model swap chain, immediate present and tearing allowed,
 so what you see on the panel is as close to the input as the display path
@@ -209,6 +210,11 @@ position, duration and distance from the screen edge, and diagnoses the cause:
 - **Reports arrive but no contact is ever flagged as touching** — the panel
   detected something and chose not to report it as a touch: firmware edge or
   palm rejection.
+- **Held back while a pen is in range** — Windows sets touch aside while a pen
+  is near the screen, so that a hand resting on it while you write does not
+  draw. A panel contact Windows did not deliver, from shortly before the pen was
+  last in range, is counted as held back rather than lost, and gets no red
+  cross.
 
 **Test the screen edges in full screen (`F`).** TouchRate blocks Windows edge
 swipes for its window, but Windows only honours that while the window is full
@@ -314,6 +320,32 @@ the click button, and the Confidence flag the pad uses to reject a palm.
   but not measured. Pads that split a frame with many fingers across several
   reports (hybrid mode) are reassembled into whole frames first.
 
+### Pen
+
+A pen — the one that comes with a 2-in-1, or a pen display or drawing tablet —
+is measured on its own too, from the pointer input Windows delivers for it
+(`GetPointerPenInfoHistory`, with the same coalesced-frame recovery as touch).
+None of its figures are mixed into the touch screen's.
+
+- **Rate with the tip down.** A pen reports while it hovers as well as while it
+  touches. Its report rate, jitter, worst gap and latency count only the reports
+  with the tip down, as for a finger, and the view switches to the pen when its
+  tip goes down. The rate while hovering is measured apart, so a pen that
+  reports more slowly in the air shows it.
+- **Pressure, live.** At the pen tip, a bright ring grows with the pressure
+  inside a pale one that marks full pressure, and the stroke is drawn as wide as
+  it was pressed. The stats column gives the pressure now on a gauge, the
+  pressure each stroke started at, and the peak; the strip below plots the
+  pressure of every report, broken at each lift.
+- **As Windows passes it on.** Pressure is 0 to 1024, shown as 0 to 1, whatever
+  the pen resolves itself. The header gives the levels the pen declares in its
+  HID descriptor, and the export how many of Windows' 1025 values the session
+  actually produced.
+- **Tilt and buttons.** Tilt where the pen reports it, and the barrel button
+  and eraser, lit while held.
+- **Palm rejection.** While the pen is in range, Windows holds touch back so
+  that a resting hand does not draw; see [Touch delivery](#touch-delivery).
+
 ### Display and frame rate
 
 - **nominal refresh** — exact rational signal timing from the display config
@@ -352,7 +384,10 @@ exports/touchrate_20260912_125034/
     ├── touchpad_samples.csv.gz            touchpad_* only when a touch pad was used
     ├── touchpad_rate_by_contacts.csv
     ├── touchpad_contacts.csv
-    └── touchpad_interval_histogram.csv
+    ├── touchpad_interval_histogram.csv
+    ├── pen_samples.csv.gz                 pen_* only when a pen was used
+    ├── pen_interval_histogram.csv
+    └── pen_latency_histogram.csv
 ```
 
 The summary is Markdown and named `README.md` so that GitHub, GitLab and
@@ -372,10 +407,11 @@ measurement is readable in the browser with no tooling.
 | `raw/latency_histogram.csv` | Delivery-latency distribution |
 | `raw/frametime_histogram.csv` | Render frame-time distribution |
 | `raw/touchpad_*` | Touch pad only: every sample in pad units, timed on both the pad's clock and the host's; rate by contact count; per-contact summary; interval distribution |
+| `raw/pen_*` | Pen only: every sample with the tip down, with pressure (0 to 1, and the 0–1024 value Windows passes on), tilt, rotation and button flags; interval and latency distributions |
 
 `[L]` streams samples continuously to `exports/live/` instead, for sessions
 longer than the in-memory ring holds. A touch pad streams to its own
-`_touchpad_live.csv` beside it.
+`_touchpad_live.csv` beside it, and a pen to `_pen_live.csv`.
 
 In `raw/samples.csv.gz`, all contacts belonging to one hardware report share a
 `frame_id` and `device_qpc` — group by those to reconstruct frames. The

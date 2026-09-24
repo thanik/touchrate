@@ -71,6 +71,9 @@ public:
                 std::vector<HidContactSample>& contacts, HidReportInfo& info);
 
     bool Describe(HANDLE device, HidDescriptorInfo& out);
+    // A pen's reports are not decoded, but they are recognised: each one says
+    // the pen is in range.
+    bool IsPen(HANDLE device);
     HANDLE LastScreenDevice() const { return m_lastScreen; }
     HANDLE LastPadDevice() const { return m_lastPad; }
     void Reset() { m_devs.clear(); m_lastScreen = m_lastPad = nullptr; }
@@ -79,6 +82,7 @@ private:
     struct Dev
     {
         bool ok = false;
+        bool pen = false;                 // a pen collection, which is not decoded
         std::vector<BYTE>   pp;
         std::vector<USHORT> fingers;      // link collections carrying X, in report order
         USHORT   countLc = 0;

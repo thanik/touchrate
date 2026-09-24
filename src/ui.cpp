@@ -243,6 +243,7 @@ static void DrawHeader(App& app, const Rect2& box)
     }
 
     const bool pad = app.ShowingPad();
+    const bool pen = app.ShowingPen();
     const TouchDevice* shown = app.ShownDevice();
     const TouchDevice& d = shown ? *shown : app.devices[0];
 
@@ -263,8 +264,12 @@ static void DrawHeader(App& app, const Rect2& box)
     char vb[32] = "";
     if (d.version) snprintf(vb, sizeof vb, "rev 0x%04X", d.version);
     char mb[64] = "";
-    if (pad ? !app.padIn.Seen() : (app.activeDevice < 0 && app.devices.size() > 1))
-        snprintf(mb, sizeof mb, pad ? "(no reports yet - touch the pad)" : "(no reports yet - touch the screen)");
+    const bool penSeen = app.pen.TotalFrames() > 0 || app.pen.HoverReports() > 0;
+    if (pad ? !app.padIn.Seen() : pen ? (!penSeen && app.devices.size() > 1)
+                                      : (app.activeDevice < 0 && app.devices.size() > 1))
+        snprintf(mb, sizeof mb, pad ? "(no reports yet - touch the pad)"
+                              : pen ? "(no reports yet - bring the pen to the screen)"
+                                    : "(no reports yet - touch the screen)");
     else if (app.devices.size() > 1)
         snprintf(mb, sizeof mb, "+%zu more digitizer%s", app.devices.size() - 1,
                  app.devices.size() == 2 ? "" : "s");
@@ -278,9 +283,22 @@ static void DrawHeader(App& app, const Rect2& box)
     y += lh;
     char buf[512];
     int n = 0;
-    n += snprintf(buf + n, sizeof buf - n, "contacts %u", d.ContactCapacity());
-    if (d.hidMaxContacts && d.hidMaxContacts < d.ContactCapacity())
-        n += snprintf(buf + n, sizeof buf - n, " (%u per HID report)", d.hidMaxContacts);
+    if (pen)
+    {
+        // What the pen itself resolves; applications get 0..1024 regardless.
+        if (d.pressureLevels)
+            n += snprintf(buf + n, sizeof buf - n, "pressure %u levels (0-1024 to apps)", d.pressureLevels);
+        else
+            n += snprintf(buf + n, sizeof buf - n, "pressure 0-1024");
+        n += snprintf(buf + n, sizeof buf - n, "   tilt %s", d.hasTilt ? "yes" : "no");
+        if (d.hasTwist) n += snprintf(buf + n, sizeof buf - n, "   twist yes");
+    }
+    else
+    {
+        n += snprintf(buf + n, sizeof buf - n, "contacts %u", d.ContactCapacity());
+        if (d.hidMaxContacts && d.hidMaxContacts < d.ContactCapacity())
+            n += snprintf(buf + n, sizeof buf - n, " (%u per HID report)", d.hidMaxContacts);
+    }
     if (d.haveRects)
     {
         n += snprintf(buf + n, sizeof buf - n, "   digitizer %ldx%ld units -> %ldx%ld px",
@@ -345,28 +363,48 @@ static void DrawCanvas(App& app, const Rect2& box)
     // into an offscreen layer that is then composited, so the accumulated
     // session history costs the same per frame however long it gets.
     {
-        const std::vector<InkPt>& ink = t.Ink();
-        const uint64_t total = t.InkTotal();
-        const size_t cap = ink.size();
-        uint64_t fresh = total - app.inkDrawn;
-        if (fresh > (uint64_t)t.InkCount()) fresh = (uint64_t)t.InkCount();
+        // Points each tracker has added since the last frame, oldest first.
+        auto freshInk = [](const Tracker& tr, uint64_t drawn, size_t& start) {
+            uint64_t fresh = tr.InkTotal() - drawn;
+            if (fresh > (uint64_t)tr.InkCount()) fresh = (uint64_t)tr.InkCount();
+            const size_t cap = tr.Ink().size();
+            start = cap ? (tr.InkHead() + cap - (size_t)fresh) % cap : 0;
+            return (size_t)fresh;
+        };
+        const Tracker& pen = app.pen;
+        size_t start = 0, penStart = 0;
+        const size_t fresh = freshInk(t, app.inkDrawn, start);
+        const size_t penFresh = freshInk(pen, app.penInkDrawn, penStart);
 
-        if (fresh && r.HasInkLayer())
+        if ((fresh || penFresh) && r.HasInkLayer())
         {
-            const size_t start = (t.InkHead() + cap - (size_t)fresh) % cap;
             const float dot = std::max(1.f, std::round(1.f * s));
             r.BeginInk();
             r.SetClip(box);
-            for (size_t i = 0; i < (size_t)fresh; ++i)
+            const std::vector<InkPt>& ink = t.Ink();
+            for (size_t i = 0; i < fresh; ++i)
             {
-                const InkPt& p = ink[(start + i) % cap];
+                const InkPt& p = ink[(start + i) % ink.size()];
                 if (!box.Contains(p.x, p.y)) continue;
                 r.FillRect(Rect2{ p.x, p.y, dot, dot },
                            SlotColor(p.slot).WithA(p.fromHistory ? 0.35f : 0.60f));
             }
+            // A pen's ink is a dot per report sized by its pressure, so the
+            // stroke thickens where it was pressed harder, and the spacing
+            // of the dots still shows the report rate.
+            const std::vector<InkPt>& pink = pen.Ink();
+            for (size_t i = 0; i < penFresh; ++i)
+            {
+                const InkPt& p = pink[(penStart + i) % pink.size()];
+                if (!box.Contains(p.x, p.y)) continue;
+                const float k = p.pressure / 255.f;
+                r.Disc(p.x, p.y, (0.6f + 2.4f * k) * s,
+                       Pal::pen.WithA((0.30f + 0.45f * k) * (p.fromHistory ? 0.8f : 1.f)));
+            }
             r.EndInk();
         }
-        app.inkDrawn = total;
+        app.inkDrawn = t.InkTotal();
+        app.penInkDrawn = pen.InkTotal();
 
         if (app.view.showInk && r.HasInkLayer())
         {
@@ -405,21 +443,47 @@ static void DrawCanvas(App& app, const Rect2& box)
                 }
             }
         }
+
+        // The pen's stroke, as wide as it was pressed hard.
+        for (int i = 0; i < kMaxSlots; ++i)
+        {
+            const Contact& c = app.pen.Slot(i);
+            for (size_t k = 1; k < c.trailCount; ++k)
+            {
+                const TrailPt& a = c.TrailAt(k - 1);
+                const TrailPt& b = c.TrailAt(k);
+                const double age = QpcToMs(now - b.qpc);
+                if (age > fadeMs) continue;
+                const float alpha = (float)(1.0 - age / fadeMs);
+                const float p = b.pressure >= 0 ? Clampf(b.pressure, 0.f, 1.f) : 0.3f;
+                r.Line(a.x, a.y, b.x, b.y, std::max(1.f, (0.8f + 4.4f * p) * s), Pal::pen.WithA(alpha * 0.75f));
+                if (app.view.showDots)
+                    r.Disc(b.x, b.y, (b.fromHistory ? 1.3f : 1.8f) * s,
+                           Pal::accent.WithA(alpha * (b.fromHistory ? 0.5f : 0.9f)));
+            }
+        }
     }
 
-    if (t.ContactsNow() == 0 && !app.ShowingPad())
+    // Hints while nothing is down; a pen close to the screen counts as down.
+    const bool penNear = app.pen.ContactsNow() > 0 || app.pen.Hovering(now);
+    if (t.ContactsNow() == 0 && !penNear && !app.ShowingPad())
     {
         const Rect2& f = app.freeArea;
-        const char* msg = app.devices.empty()
-            ? "No touch device detected"
-            : "Touch anywhere to begin measuring";
+        const bool pen = app.ShowingPen();
+        const char* msg = app.devices.empty() ? "No touch device detected"
+                        : pen ? "Draw anywhere with the pen to begin measuring"
+                              : "Touch anywhere to begin measuring";
         r.TextCenter(F_HEAD, f.x + f.w * 0.5f,
                      f.y + f.h * 0.5f - r.FontHeight(F_HEAD),
                      Pal::textFaint, "%s", msg);
         if (!app.devices.empty())
             r.TextCenter(F_TINY, f.x + f.w * 0.5f, f.y + f.h * 0.5f + 4 * s,
-                         Pal::textFaint,
-                         "Drag slowly to see sample spacing. Press all ten fingers for the contact test.");
+                         Pal::textFaint, "%s",
+                         pen ? "Drag slowly to see sample spacing. Press harder and lighter to see the pressure."
+                             : "Drag slowly to see sample spacing. Press all ten fingers for the contact test.");
+        if (!pen && app.HasPen())
+            r.TextCenter(F_TINY, f.x + f.w * 0.5f, f.y + f.h * 0.5f + 4 * s + r.FontHeight(F_TINY) * 1.4f,
+                         Pal::textFaint, "A pen is measured separately: draw with it to see its pressure.");
     }
 
     r.ClearClip();
@@ -475,6 +539,63 @@ static void DrawContacts(App& app, const Rect2& box)
     }
 }
 
+// The pen tip. A pale ring marks full pressure and a bright one inside it the
+// pressure now, so how hard the pen is pressed reads at a glance; a hovering
+// pen gets a small marker where it would land.
+static void DrawPen(App& app, const Rect2& box)
+{
+    Renderer& r = app.rend;
+    const Tracker& t = app.pen;
+    const float s = r.Scale();
+    const Color col = Pal::pen;
+    const float full = 34 * s;
+    const float fh = r.FontHeight(F_TINY);
+
+    for (int i = 0; i < kMaxSlots; ++i)
+    {
+        const Contact& c = t.Slot(i);
+        if (!c.active) continue;
+        const float p = c.pressure >= 0 ? Clampf(c.pressure, 0.f, 1.f) : 0.f;
+
+        r.FillRect(Rect2{ box.x, std::round(c.y), box.w, 1 }, col.WithA(0.18f));
+        r.FillRect(Rect2{ std::round(c.x), box.y, 1, box.h }, col.WithA(0.18f));
+        r.Glow(c.x, c.y, full * 1.5f, Pal::accent.WithA(0.06f + 0.18f * p));
+        r.RingShape(c.x, c.y, full, col.WithA(0.30f));
+        if (c.pressure >= 0)
+            r.RingShape(c.x, c.y, std::max(3.f * s, full * p), Pal::accent.WithA(0.95f));
+        r.Disc(c.x, c.y, 2.5f * s, col);
+
+        // Readouts only over open canvas, as for a finger.
+        if (!app.freeArea.Contains(c.x, c.y)) continue;
+        float lx = c.x + full + 8 * s, ly = c.y - fh * 1.2f;
+        if (lx + 190 * s > app.freeArea.r()) lx = c.x - full - 8 * s - 190 * s;
+        r.Textf(F_TINY, lx, ly, Pal::text, "%.0f, %.0f px", c.x, c.y);
+        ly += fh * 1.2f;
+        if (c.pressure >= 0)
+            r.Textf(F_TINY, lx, ly, Pal::accent, "pressure %.3f  %ld/1024", c.pressure, std::lround(c.pressure * 1024.0));
+        else
+            r.Text(F_TINY, lx, ly, Pal::textFaint, "pressure not reported");
+        ly += fh * 1.2f;
+        char more[64];
+        int n = snprintf(more, sizeof more, c.instHz > 0 ? "%.0f Hz" : "-- Hz", c.instHz);
+        if (c.tiltX != kNoTilt && c.tiltY != kNoTilt)
+            n += snprintf(more + n, sizeof more - n, "  tilt %d/%d", c.tiltX, c.tiltY);
+        if (c.penFlags & PEN_FLAG_BARREL) n += snprintf(more + n, sizeof more - n, "  barrel");
+        if (c.penFlags & (PEN_FLAG_ERASER | PEN_FLAG_INVERTED)) snprintf(more + n, sizeof more - n, "  eraser");
+        r.Text(F_TINY, lx, ly, c.instHz > 0 ? RateColor(c.instHz) : Pal::textFaint, more);
+    }
+
+    if (t.Hovering(app.nowQpc))
+    {
+        const PenHover& h = t.Hover();
+        r.RingShape(h.x, h.y, 8 * s, col.WithA(0.55f));
+        r.Disc(h.x, h.y, 1.5f * s, col.WithA(0.85f));
+        if (app.freeArea.Contains(h.x, h.y))
+            r.Text(F_TINY, h.x + 14 * s, h.y - fh * 0.5f, Pal::textFaint,
+                   (h.penFlags & PEN_FLAG_BARREL) ? "hover  barrel" : "hover");
+    }
+}
+
 // Touches the panel reported that Windows did not deliver. These are exactly
 // the touches that otherwise leave no trace on screen, so they are drawn over
 // everything. Positions come from the panel's own HID coordinates.
@@ -504,7 +625,7 @@ static void DrawUndelivered(App& app, const Rect2& box)
     const float pulse = 0.55f + 0.45f * (float)std::sin(QpcToSec(now) * 12.0);
     for (const HidTrack& h : t.HidTracks())
     {
-        if (h.delivered || h.ended || !h.mapped || h.offWindow) continue;
+        if (h.delivered || h.ended || !h.mapped || h.offWindow || t.PenExcuses(h)) continue;
         if (QpcToMs(now - h.firstQpc) < 60.0) continue;
 
         const float x = h.sx - (float)o.x, y = h.sy - (float)o.y;
@@ -652,6 +773,7 @@ static void DrawStats(App& app, const Rect2& box)
     Renderer& r = app.rend;
     const Tracker& t = app.Shown();
     const bool pad = app.ShowingPad();
+    const bool pen = app.ShowingPen();
     const TouchPadInput& in = app.padIn;
     const float s = r.Scale();
     const int64_t now = app.nowQpc;
@@ -690,6 +812,7 @@ static void DrawStats(App& app, const Rect2& box)
     {
         Rect2 hb{ bx, y, bw, heroH };
         Block(r, hb, pad ? "TOUCH PAD REPORT RATE  (HID frames per second)"
+                   : pen ? "PEN REPORT RATE  (input frames per second, tip down)"
                          : "TOUCH SCREEN REPORT RATE  (input frames per second)", kBlockA);
 
         // Use the big face only when the block is tall enough to hold it.
@@ -763,6 +886,13 @@ static void DrawStats(App& app, const Rect2& box)
             else if (in.ScanClock())   c.Row("timed by", Pal::accent, "pad clock, 100 us");
             else                       c.Row("timed by", Pal::textDim, "arrival (no pad clock)");
         }
+        // A pen reports while it hovers too. Its raw reports count both, and
+        // the hover rate is timed from the hover reports Windows delivers.
+        else if (pen && t.HidSeen())
+            c.Row(hidLabel, Pal::accent, "%.0f /s   hover %.0f /s", hidHz, t.HoverLiveHz(now));
+        else if (pen)
+            c.Row("hover reports", t.HoverLiveHz(now) > 0 ? Pal::accent : Pal::textFaint,
+                  t.HoverReports() ? "%.0f /s" : "--", t.HoverLiveHz(now));
         else if (!t.HidSeen())
             c.Row(hidLabel, Pal::textFaint, "not observed");
         else if (t.HidUndelivered())
@@ -862,7 +992,66 @@ static void DrawStats(App& app, const Rect2& box)
         y = b.b() + gap;
     }
 
-    // ---- contacts / ten finger test
+    // ---- the pen's pressure, tilt and buttons, in place of the contact test
+    if (pen)
+    {
+        Rect2 b{ bx, y, bw, hMulti };
+        Block(r, b, "PEN  (pressure as Windows passes it on, 0-1024)", kBlockA);
+        Col c(r, Rect2{ b.x + 10 * s, b.y + titleH, bw - 20 * s, 0 });
+        c.lh = rowH;
+
+        const Contact* tip = nullptr;
+        for (int i = 0; i < kMaxSlots && !tip; ++i) if (t.Slot(i).active) tip = &t.Slot(i);
+        const bool hovering = t.Hovering(now);
+        const PenHover& hv = t.Hover();
+        const float pNow = tip && tip->pressure >= 0 ? Clampf(tip->pressure, 0.f, 1.f) : -1.f;
+        const Stats& pr = t.Pressure();
+        const Stats& pd = t.PressureAtDown();
+
+        if (pNow >= 0)     c.Row("pressure", Pal::accent, "%.3f   %ld of 1024", pNow, std::lround(pNow * 1024.0));
+        else if (tip)      c.Row("pressure", Pal::textDim, "not reported");
+        else if (hovering) c.Row("pressure", Pal::textDim, "0   hovering");
+        else               c.Row("pressure", Pal::textFaint, "--");
+        if (pr.n) c.Row("at pen-down / peak", Pal::textDim, "%.3f / %.3f", pd.n ? pd.mean : 0.0, pr.mx);
+        else      c.Row("at pen-down / peak", Pal::textFaint, "--");
+
+        // The gauge sits where the contact pips would: pressure now, quarter
+        // marks, and the session's peak.
+        const float gx = b.x + 12 * s, gw = bw - 24 * s;
+        const float gh = std::round(pipR * 1.2f);
+        const float gy = std::round(c.y + pipR + 4 * s - gh * 0.5f);
+        r.FillRect(Rect2{ gx, gy, gw, gh }, Pal::bg.WithA(0.6f));
+        if (pNow > 0) r.FillRect(Rect2{ gx, gy, std::max(1.f, gw * pNow), gh }, Pal::accent.WithA(0.85f));
+        for (int k = 1; k < 4; ++k)
+            r.FillRect(Rect2{ std::round(gx + gw * k / 4.f), gy, 1, gh }, Pal::edge);
+        r.FrameRect(Rect2{ gx, gy, gw, gh }, 1.f, Pal::edge);
+        if (pr.n)
+            r.FillRect(Rect2{ std::round(gx + gw * Clampf((float)pr.mx, 0.f, 1.f)) - 1, gy - 3 * s,
+                              std::max(2.f, 2 * s), gh + 6 * s }, Pal::text);
+
+        // Below it: tilt now, the buttons lit while held, and how many of
+        // Windows' pressure levels the session has used.
+        const float ty = gy + gh + 5 * s;
+        float tx = gx;
+        const int8_t tiltX = tip ? tip->tiltX : hovering ? hv.tiltX : kNoTilt;
+        const int8_t tiltY = tip ? tip->tiltY : hovering ? hv.tiltY : kNoTilt;
+        const uint8_t flags = tip ? tip->penFlags : hovering ? hv.penFlags : 0;
+        char tb[48];
+        if (tiltX != kNoTilt && tiltY != kNoTilt) snprintf(tb, sizeof tb, "tilt %d / %d deg", tiltX, tiltY);
+        else snprintf(tb, sizeof tb, t.TiltX().n ? "tilt --" : "tilt not reported");
+        r.Text(F_TINY, tx, ty, t.TiltX().n ? Pal::textDim : Pal::textFaint, tb);
+        tx += r.TextW(F_TINY, tb) + 16 * s;
+        r.Text(F_TINY, tx, ty, (flags & PEN_FLAG_BARREL) ? Pal::accent : Pal::textFaint, "barrel");
+        tx += r.TextW(F_TINY, "barrel") + 12 * s;
+        r.Text(F_TINY, tx, ty, (flags & (PEN_FLAG_ERASER | PEN_FLAG_INVERTED)) ? Pal::accent : Pal::textFaint, "eraser");
+        tx += r.TextW(F_TINY, "eraser") + 16 * s;
+        char lv[32];
+        snprintf(lv, sizeof lv, "%u levels seen", t.PressureLevels());
+        if (tx + r.TextW(F_TINY, lv) <= gx + gw)
+            r.TextRight(F_TINY, gx + gw, ty, t.PressureLevels() ? Pal::textDim : Pal::textFaint, "%s", lv);
+        y = b.b() + gap;
+    }
+    else   // ---- contacts / ten finger test
     {
         Rect2 b{ bx, y, bw, hMulti };
         Block(r, b, pad ? "MULTI-TOUCH  (touch pad, Hz per count)"
@@ -1115,6 +1304,76 @@ static void DrawRateGraph(App& app, const Rect2& box)
     r.Text(F_TINY, plot.x, plot.b() + 4 * s, Pal::textFaint, "Hz");
     r.TextRight(F_TINY, plot.r(), plot.b() + 4 * s, Pal::textFaint,
                 "%zu reports shown", ring.count);
+}
+
+// ============================================== pen pressure over time
+
+// The pressure of each report, newest at right, broken at every lift - the
+// pen's counterpart of the contact table, which for one pen has one row.
+static void DrawPressure(App& app, const Rect2& box)
+{
+    Renderer& r = app.rend;
+    const Tracker& t = app.pen;
+    const Ring& ring = t.PressureRing();
+    const float s = r.Scale();
+
+    Block(r, box, "PEN PRESSURE   (per report, newest at right)");
+
+    Rect2 plot{ box.x + 40 * s, box.y + 26 * s, box.w - 52 * s, box.h - 26 * s - 20 * s };
+    if (plot.w < 20 || plot.h < 20) return;
+
+    auto yOf = [&](float p) { return plot.b() - Clampf(p, 0.f, 1.f) * plot.h; };
+    for (int k = 0; k <= 4; ++k)
+    {
+        const float gy = std::round(yOf(k / 4.f));
+        if (k) r.FillRect(Rect2{ plot.x, gy, plot.w, 1 }, Pal::grid);
+        r.TextRight(F_TINY, plot.x - 6 * s, gy - r.FontHeight(F_TINY) * 0.5f, Pal::textFaint,
+                    "%.2f", k / 4.0);
+    }
+    r.FillRect(Rect2{ plot.x, plot.b(), plot.w, 1 }, Pal::edge);
+
+    size_t points = 0;
+    for (size_t i = 0; i < ring.count; ++i) if (ring.At(i) >= 0) ++points;
+    if (points < 2)
+    {
+        r.TextCenter(F_TINY, plot.x + plot.w * 0.5f, plot.y + plot.h * 0.5f - r.FontHeight(F_TINY),
+                     Pal::textFaint, "no pressure yet - draw with the pen");
+        return;
+    }
+
+    // One column per pixel, as the rate graph: the spread of the reports in
+    // it, and nothing where the pen was lifted.
+    const int cols = std::max(1, (int)plot.w);
+    const size_t n = ring.count;
+    const float thick = std::max(1.f, std::round(1.5f * s));
+    for (int c = 0; c < cols; ++c)
+    {
+        size_t i0 = (size_t)((double)c / cols * n);
+        size_t i1 = (size_t)((double)(c + 1) / cols * n);
+        if (i1 <= i0) i1 = i0 + 1;
+        if (i1 > n) i1 = n;
+        if (i0 >= n) break;
+        float mn = 2.f, mx = -1.f;
+        for (size_t i = i0; i < i1; ++i)
+        {
+            const float v = ring.At(i);
+            if (v < 0) continue;
+            mn = std::min(mn, v);
+            mx = std::max(mx, v);
+        }
+        if (mx < 0) continue;
+        const float y0 = yOf(mx), y1 = yOf(mn);
+        r.FillRect(Rect2{ plot.x + c, y0 - thick * 0.5f, 1, std::max(thick, y1 - y0 + thick) },
+                   Pal::accent.WithA(0.9f));
+    }
+
+    // The scale note gives way first when the strip is narrow.
+    char right[64];
+    snprintf(right, sizeof right, "peak %.3f   %zu reports shown", t.Pressure().mx, points);
+    const char* note = "0-1024 scaled to 0-1";
+    if (plot.x + r.TextW(F_TINY, note) + 16 * s + r.TextW(F_TINY, right) <= plot.r())
+        r.Text(F_TINY, plot.x, plot.b() + 4 * s, Pal::textFaint, note);
+    r.TextRight(F_TINY, plot.r(), plot.b() + 4 * s, Pal::textFaint, "%s", right);
 }
 
 // ============================================== per contact table
@@ -1371,6 +1630,11 @@ static const char* kHelpNotes[] = {
     "A touch pad is measured on its own, from its HID",
     "reports, timed by the pad's own scan-time clock.",
     "The view follows whichever input was touched last.",
+    "",
+    "A pen is measured on its own too, while its tip is",
+    "down. The ring at the tip and the width of its ink",
+    "follow its pressure, as Windows passes it on: 0 to",
+    "1024, whatever the pen resolves itself.",
     "",
     "Measured refresh times real vblanks on a dedicated",
     "thread, so it shows the panel's true rate rather",
@@ -1630,9 +1894,11 @@ void DrawUi(App& app)
     DrawStats(app, L.stats);
     DrawHistogram(app, L.histo);
     DrawRateGraph(app, L.graph);
-    DrawTable(app, L.table);
+    if (app.ShowingPen()) DrawPressure(app, L.table);
+    else DrawTable(app, L.table);
     DrawFooter(app, L.footer);
     DrawContacts(app, L.canvas);
+    DrawPen(app, L.canvas);
     DrawUndelivered(app, L.canvas);
     if (app.view.showHelp) DrawHelp(app);
 }

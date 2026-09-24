@@ -225,6 +225,25 @@ static bool WritePadSamples(const std::wstring& path, const Tracker& t, uint64_t
     return o.Close();
 }
 
+// A pen's samples with the tip down, with pressure, tilt and buttons. The
+// format is the pen's live log's.
+static bool WritePenSamples(const std::wstring& path, const Tracker& t, uint64_t& rows)
+{
+    GzipWriter o;
+    if (!o.Open(path)) return false;
+    o.S(kPenCsvHeader);
+    const size_t n = t.RecordCount();
+    const int64_t t0 = n ? t.RecordAt(0).deviceQpc : 0;
+    char b[512];
+    for (size_t i = 0; i < n; ++i)
+    {
+        FormatPenCsvRow(b, sizeof b, i, t.RecordAt(i), t0);
+        o.S(b);
+    }
+    rows = n;
+    return o.Close();
+}
+
 static bool WriteRateByCount(const std::wstring& path, const Tracker& tr)
 {
     Out o;
@@ -286,6 +305,8 @@ void MdDevice(Out& o, const TouchDevice& d, const char* tag)
     if (d.maxContacts)    o.P("| Max contacts (OS) | %u |\n", d.maxContacts);
     if (d.hidMaxContacts) o.P("| Contact slots per HID report | %u |\n", d.hidMaxContacts);
     if (d.inputReportBytes) o.P("| Input report | %u bytes |\n", d.inputReportBytes);
+    if (d.pressureLevels) o.P("| Pressure resolution | %u levels (HID) |\n", d.pressureLevels);
+    if (d.IsPen()) o.P("| Tilt / twist | %s / %s |\n", d.hasTilt ? "yes" : "no", d.hasTwist ? "yes" : "no");
     if (d.haveRects)
     {
         o.P("| Digitizer extents | %ld × %ld logical units |\n",
@@ -375,7 +396,7 @@ bool ScreenDescriptor(const ExportContext& ctx, HidDescriptorInfo& di)
     const size_t idx = ctx.activeDevice >= 0 ? (size_t)ctx.activeDevice : 0;
     if (idx >= ctx.devices->size()) return false;
     const TouchDevice& d = (*ctx.devices)[idx];
-    return d.rawHandle && d.usage != 0x05 && ctx.hid->Describe(d.rawHandle, di);
+    return d.rawHandle && d.IsScreen() && ctx.hid->Describe(d.rawHandle, di);
 }
 
 // Intervals a contact count needs before its rate is used to judge the device.
@@ -424,15 +445,15 @@ int GapExample(const Tracker& t, double& modeMs, double& rate)
 // would give, and whether this device's gap varies. Any figure it quotes is
 // this device's own, so none can be mistaken for an example.
 void MdRateMethod(Out& o, const Tracker& t, const char* heading, const char* device,
-                  const char* explainedAt = nullptr)
+                  const char* explainedAt = nullptr, const char* explainedBy = "touch screen")
 {
     o.P("%s\n\n", heading);
-    // The second input in one report only points at the explanation the first
+    // A later input in one report only points at the explanation the first
     // already gave, rather than repeating it.
     if (explainedAt)
     {
-        o.P("Measured the same way as the touch screen; see [How the rate is measured](%s).\n\n",
-            explainedAt);
+        o.P("Measured the same way as the %s; see [How the rate is measured](%s).\n\n",
+            explainedBy, explainedAt);
     }
     else
     {
@@ -485,16 +506,23 @@ void MdRateMethod(Out& o, const Tracker& t, const char* heading, const char* dev
         o.P("The `all` row lumps every contact count together. This %s's rate changes as fingers\n"
             "are added, so that row mixes several rates; read the per-count rows instead.\n\n", device);
 
-    o.S("| Contacts | Rate Hz | Most common gap ms | That gap alone, Hz | Difference |\n");
-    o.S("| ---: | ---: | ---: | ---: | ---: |\n");
+    // A pen is always one contact, so it gets one row and no contact column.
+    const bool counts = !t.IsPen();
+    if (counts)
+        o.S("| Contacts | Rate Hz | Most common gap ms | That gap alone, Hz | Difference |\n"
+            "| ---: | ---: | ---: | ---: | ---: |\n");
+    else
+        o.S("| Rate Hz | Most common gap ms | That gap alone, Hz | Difference |\n"
+            "| ---: | ---: | ---: | ---: |\n");
     auto row = [&](const char* label, double rate, double modeMs) {
         const double modeHz = modeMs > 0 ? 1000.0 / modeMs : 0.0;
-        o.P("| %s | **%.1f** | %.2f | %.1f | ", label, rate, modeMs, modeHz);
+        if (counts) o.P("| %s ", label);
+        o.P("| **%.1f** | %.2f | %.1f | ", rate, modeMs, modeHz);
         if (modeHz > 0) o.P("%+.1f%% |\n", (rate / modeHz - 1.0) * 100.0);
         else            o.S("- |\n");
     };
     row("all", t.RateHz(), t.ModeMs());
-    for (int n = 1; n <= kMaxSlots; ++n)
+    for (int n = 1; counts && n <= kMaxSlots; ++n)
     {
         if (!t.HasDataAt(n)) continue;
         char lab[16];
@@ -561,7 +589,7 @@ void MdRateBullets(Out& o, const Tracker& t)
         if (hz < worstHz) { worstHz = hz; worstN = n; }
         if (hz > bestHz) bestHz = hz;
     }
-    if (worstN && bestHz > 0)
+    if (worstN && bestHz > 0 && !t.IsPen())   // a pen is always one contact
     {
         double drop = (1.0 - worstHz / bestHz) * 100.0;
         if (drop >= 15.0)
@@ -754,6 +782,168 @@ void MdPadObservations(Out& o, const ExportContext& ctx)
     o.S("\n");
 }
 
+bool PenMeasured(const ExportContext& ctx)
+{
+    return ctx.pen && ctx.pen->TotalFrames() > 0;
+}
+
+const TouchDevice* PenDevice(const ExportContext& ctx)
+{
+    if (!ctx.devices) return nullptr;
+    if (ctx.penDevice >= 0 && (size_t)ctx.penDevice < ctx.devices->size())
+        return &(*ctx.devices)[(size_t)ctx.penDevice];
+    for (const TouchDevice& d : *ctx.devices) if (d.IsPen()) return &d;
+    return nullptr;
+}
+
+// Everything measured from the pen, kept apart from the touch screen. The
+// rate method is pointed at where an earlier section explained it, or
+// explained here when this is the first.
+void MdPen(Out& o, const ExportContext& ctx, const char* explainedAt, const char* explainedBy)
+{
+    const Tracker& p = *ctx.pen;
+    const Histogram& ih = p.IntervalHist();
+    const Histogram& lh = p.LatencyHist();
+    const TouchDevice* dev = PenDevice(ctx);
+    const Stats& pr = p.Pressure();
+    const Stats& pd = p.PressureAtDown();
+
+    o.S("## Pen\n\n");
+    o.S("The pen is measured on its own, from the pointer input Windows delivers for it, and\n"
+        "none of these figures are mixed into the touch screen's. A pen reports while it hovers\n"
+        "as well as while it touches: the rate and timing here count only the reports with the\n"
+        "tip down, as for a finger, and the rate while hovering is given apart. Pressure is as\n"
+        "Windows passes it to applications — 0 to 1024, here scaled to 0 to 1 — whatever the\n"
+        "pen resolves itself.\n\n");
+
+    o.S("| Metric | Value |\n| --- | --- |\n");
+    if (dev)
+        o.P("| Device | %s — `%s` |\n", Cell(dev->Label()).c_str(), Cell(dev->VidPidString()).c_str());
+    if (dev && dev->pressureLevels)
+        o.P("| Pressure resolution | %u levels declared by the pen; Windows passes on 1025 (0–1024) |\n",
+            dev->pressureLevels);
+    const char* rateAt = explainedAt ? explainedAt : "#how-the-pen-rate-is-measured";
+    o.P("| Report rate | **%.1f Hz** |\n", p.RateHz());
+    MdGapRow(o, p, rateAt);
+    o.P("| Mean over every gap | %.1f Hz |\n", p.AvgHz());
+    if (p.IntervalMs().n)
+    {
+        o.P("| Interval jitter (sd) | %.3f ms |\n", p.IntervalMs().Sd());
+        o.P("| Worst gap | %.2f ms |\n", p.MaxGapMs());
+    }
+    if (lh.total)
+        o.P("| Delivery latency p50 / p99 | %.2f / %.2f ms |\n", lh.Percentile(0.50), lh.Percentile(0.99));
+    if (p.HoverIntervalMs().n)
+        o.P("| Rate while hovering | %.1f Hz |\n", p.HoverRateHz());
+    if (pr.n)
+    {
+        if (pd.n)
+            o.P("| Pressure at pen-down | %.3f mean, %.3f lightest, over %llu stroke%s |\n",
+                pd.mean, pd.mn, (unsigned long long)pd.n, pd.n == 1 ? "" : "s");
+        o.P("| Pressure with the tip down | %.3f mean, %.3f peak |\n", pr.mean, pr.mx);
+        o.P("| Pressure values seen | %u of the 1025 Windows passes on |\n", p.PressureLevels());
+    }
+    else
+        o.S("| Pressure | not reported |\n");
+    if (p.TiltX().n && p.TiltY().n)
+        o.P("| Tilt | x %+.0f to %+.0f°, y %+.0f to %+.0f° |\n",
+            p.TiltX().mn, p.TiltX().mx, p.TiltY().mn, p.TiltY().mx);
+    else
+        o.S("| Tilt | not reported |\n");
+    if (p.RotationSeen()) o.S("| Rotation (twist) | reported |\n");
+    const uint8_t flags = p.PenFlagsSeen();
+    o.P("| Barrel button / eraser | %s / %s |\n",
+        (flags & PEN_FLAG_BARREL) ? "used" : "not used",
+        (flags & (PEN_FLAG_ERASER | PEN_FLAG_INVERTED)) ? "used" : "not used");
+    o.P("| Strokes (pen down / up) | %llu / %llu |\n", (unsigned long long)p.Downs(), (unsigned long long)p.Ups());
+    o.S("\n");
+
+    if (p.IntervalMs().n)
+        MdRateMethod(o, p, explainedAt ? "### Pen: how the rate is measured" : "### How the pen rate is measured",
+                     "pen", explainedAt, explainedBy);
+
+    o.S("### Pen report timing\n\n");
+    o.P("History recovery was **%s**.\n\n",
+        p.UseHistory() ? "on, so coalesced frames were recovered"
+                       : "off, so this is the delivered message rate");
+    o.S("| Metric | Value |\n| --- | --- |\n");
+    o.P("| Input frames with the tip down | %llu |\n", (unsigned long long)p.TotalFrames());
+    o.P("| Samples | %llu (%llu recovered from history) |\n",
+        (unsigned long long)p.TotalSamples(), (unsigned long long)p.HistorySamples());
+    o.P("| Hover reports | %llu |\n", (unsigned long long)p.HoverReports());
+    o.P("| Pointer messages, hovering included | %llu |\n", (unsigned long long)p.Messages());
+    if (p.HidSeen())
+        o.P("| Raw HID reports, hovering included | %llu |\n", (unsigned long long)p.HidReports());
+    else
+        o.S("| Raw HID reports | none observed |\n");
+    if (p.IntervalMs().n)
+    {
+        const Stats& s = p.IntervalMs();
+        o.P("| Interval mean / sd | %.4f / %.4f ms |\n", s.mean, s.Sd());
+        o.P("| Interval min / max | %.4f / %.4f ms |\n", s.mn, s.mx);
+        o.P("| Interval p50 / p90 / p99 / p99.9 | %.3f / %.3f / %.3f / %.3f ms |\n",
+            ih.Percentile(0.50), ih.Percentile(0.90), ih.Percentile(0.99), ih.Percentile(0.999));
+    }
+    if (lh.total)
+        o.P("| Delivery latency p50 / p90 / p99 / p99.9 | %.3f / %.3f / %.3f / %.3f ms |\n",
+            lh.Percentile(0.50), lh.Percentile(0.90), lh.Percentile(0.99), lh.Percentile(0.999));
+    o.S("\n");
+    o.S("| Metric | n | Mean | SD | Min | Max |\n| --- | ---: | ---: | ---: | ---: | ---: |\n");
+    MdStat(o, "hover interval (ms)", p.HoverIntervalMs());
+    MdStat(o, "delivery latency, device → app (ms)", p.LatencyMs());
+    MdStat(o, "interval between pen-downs (ms)", p.TapIntervalMs(), 2);
+    MdStat(o, "stroke, down→up (ms)", p.DwellMs(), 2);
+    MdStat(o, "\\|processed − raw position\\| (px)", p.PredictPx());
+    o.S("\n");
+}
+
+void MdPenObservations(Out& o, const ExportContext& ctx)
+{
+    const Tracker& p = *ctx.pen;
+    const Histogram& lh = p.LatencyHist();
+    o.S("**Pen**\n\n");
+    if (!p.IntervalMs().n)
+    {
+        o.S("- No pen report timing was captured. Draw a few strokes, keeping the tip down for\n"
+            "  a second or more.\n\n");
+        return;
+    }
+    MdRateBullets(o, p);
+    if (p.LatencyMs().n)
+        o.P("- Median delivery latency %.2f ms, p99 %.2f ms.\n", lh.Percentile(0.50), lh.Percentile(0.99));
+    const double hover = p.HoverRateHz(), rate = p.RateHz();
+    if (p.HoverIntervalMs().n >= kJudgeMin && hover > 0 && rate > 0)
+    {
+        if (std::fabs(hover / rate - 1.0) > 0.05)
+            o.P("- Hovering, it reports at %.0f Hz, %s than the %.0f Hz with the tip down.\n",
+                hover, hover < rate ? "slower" : "faster", rate);
+        else
+            o.S("- It reports at the same rate hovering as with the tip down.\n");
+    }
+    const Stats& pr = p.Pressure();
+    const Stats& pd = p.PressureAtDown();
+    if (pr.n)
+    {
+        if (pd.n)
+            o.P("- The tip went down at a pressure of %.3f on average and %.3f at the lightest,\n"
+                "  over %llu stroke%s; the hardest press reached %.3f.\n",
+                pd.mean, pd.mn, (unsigned long long)pd.n, pd.n == 1 ? "" : "s", pr.mx);
+        o.P("- %u of the 1025 pressure values Windows can pass on were seen", p.PressureLevels());
+        const TouchDevice* dev = PenDevice(ctx);
+        if (dev && dev->pressureLevels) o.P(";\n  the pen itself declares %u levels", dev->pressureLevels);
+        o.S(".\n");
+    }
+    else
+        o.S("- The pen reported no pressure.\n");
+    if (p.PredictPx().n && p.PredictPx().mean > 0.5)
+        o.P("- The OS moves reported positions by %.2f px on average.\n", p.PredictPx().mean);
+    if (p.LostContacts())
+        o.P("- %llu stroke%s never got an up message and %s released by the watchdog.\n",
+            (unsigned long long)p.LostContacts(), p.LostContacts() == 1 ? "" : "s",
+            p.LostContacts() == 1 ? "was" : "were");
+    o.S("\n");
+}
+
 // What the panel reported against what Windows delivered, and why they differ.
 void MdDelivery(Out& o, const ExportContext& ctx)
 {
@@ -792,6 +982,8 @@ void MdDelivery(Out& o, const ExportContext& ctx)
     if (t.HidOffWindowBlocked())
         o.P(" (%llu with TouchRate full screen)", (unsigned long long)t.HidOffWindowBlocked());
     o.S(" |\n");
+    if (t.HidPenHeld())
+        o.P("| Held back while a pen was in range, not judged | %llu |\n", (unsigned long long)t.HidPenHeld());
     o.P("| HID reports: touching / not touching / empty | %llu / %llu / %llu |\n",
         (unsigned long long)t.HidTouchReports(), (unsigned long long)t.HidNoTipReports(),
         (unsigned long long)t.HidEmptyReports());
@@ -837,8 +1029,15 @@ void MdDelivery(Out& o, const ExportContext& ctx)
     const uint64_t offWindow = t.HidOffWindow(), offBlocked = t.HidOffWindowBlocked();
 
     // A touch on another window is not a loss, but in full screen TouchRate
-    // covers the display, so one there means something sits above it.
+    // covers the display, so one there means something sits above it. Nor is
+    // one Windows set aside while a pen was near.
     auto noteAbove = [&] {
+        if (const uint64_t held = t.HidPenHeld())
+            o.P("%llu contact%s the panel reported while a pen was in range %s not delivered. Windows\n"
+                "holds touch back while a pen is near, so that a hand resting on the screen does not\n"
+                "draw; %s not counted as lost.\n\n",
+                (unsigned long long)held, held == 1 ? "" : "s", held == 1 ? "was" : "were",
+                held == 1 ? "it is" : "they are");
         if (!offBlocked) return;
         o.P("%llu touch%s landed on another window while TouchRate was full screen, so\n"
             "something sits above it there - the taskbar or an always-on-top overlay is the\n"
@@ -860,7 +1059,7 @@ void MdDelivery(Out& o, const ExportContext& ctx)
                 "detected, it did not report as a touch, which points at the panel's own firmware\n"
                 "(edge or palm rejection) rather than at Windows.\n\n",
                 (unsigned long long)(t.HidNoTipReports() + t.HidEmptyReports()));
-        else
+        else if (!t.HidPenHeld())
             o.S("No panel contacts were recorded in this session.\n\n");
         noteAbove();
         return;
@@ -999,7 +1198,7 @@ static void MdGridScan(Out& o, const GridScan& g)
 }
 
 // The touch screen's sections: rate, timing, delivery, latency, contacts.
-static void MdScreen(Out& o, const ExportContext& ctx, const TouchDevice* dev, bool padToo)
+static void MdScreen(Out& o, const ExportContext& ctx, const TouchDevice* dev, bool padToo, bool penToo)
 {
     const Tracker& t = *ctx.tracker;
     const Histogram& ih = t.IntervalHist();
@@ -1007,9 +1206,15 @@ static void MdScreen(Out& o, const ExportContext& ctx, const TouchDevice* dev, b
 
     // ---- headline
     o.S("## Headline\n\n");
-    if (padToo)
+    if (padToo && penToo)
+        o.S("These are the touch screen's figures. The touch pad and the pen were measured\n"
+            "separately; see [Touch pad](#touch-pad) and [Pen](#pen).\n\n");
+    else if (padToo)
         o.S("These are the touch screen's figures. The touch pad was measured separately; see\n"
             "[Touch pad](#touch-pad).\n\n");
+    else if (penToo)
+        o.S("These are the touch screen's figures. The pen was measured separately; see\n"
+            "[Pen](#pen).\n\n");
     o.S("| Metric | Value |\n| --- | --- |\n");
     o.P("| Report rate | **%.1f Hz** |\n", t.RateHz());
     if (t.HasDataAt(1)) o.P("| Rate at 1 contact | %.1f Hz |\n", t.RateHzAt(1));
@@ -1155,13 +1360,16 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
     const Histogram& lh = t.LatencyHist();
     const double sessionSec = QpcToSec(ctx.nowQpc - ctx.sessionStartQpc);
 
-    // The touch screen - never the touch pad, which has its own line.
+    // The touch screen - never the touch pad or the pen, which have lines of
+    // their own.
     const TouchDevice* dev = nullptr;
     if (ctx.devices && ctx.activeDevice >= 0 && (size_t)ctx.activeDevice < ctx.devices->size())
         dev = &(*ctx.devices)[(size_t)ctx.activeDevice];
     else if (ctx.devices)
-        for (const TouchDevice& d : *ctx.devices) if (d.usage != 0x05) { dev = &d; break; }
+        for (const TouchDevice& d : *ctx.devices) if (d.IsScreen()) { dev = &d; break; }
     const TouchDevice* padDev = PadDevice(ctx);
+    const TouchDevice* penDev = PenDevice(ctx);
+    const bool penData = PenMeasured(ctx);
 
     // ---- title
     o.P("# TouchRate measurement — %s\n\n", WideToUtf8(IsoNow()).c_str());
@@ -1176,6 +1384,11 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
             Cell(padDev->Label()).c_str(), Cell(padDev->VidPidString()).c_str(),
             padDev->manufacturer.empty() ? "" : " — ",
             padDev->manufacturer.empty() ? "" : Cell(WideToUtf8(padDev->manufacturer)).c_str());
+    if (penDev && penData)
+        o.P("**Pen:** %s — `%s`%s%s  \n",
+            Cell(penDev->Label()).c_str(), Cell(penDev->VidPidString()).c_str(),
+            penDev->manufacturer.empty() ? "" : " — ",
+            penDev->manufacturer.empty() ? "" : Cell(WideToUtf8(penDev->manufacturer)).c_str());
     if (ctx.monitor)
     {
         const MonitorInfo& m = *ctx.monitor;
@@ -1185,7 +1398,22 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
         if (ctx.vblank && ctx.vblank->Valid()) o.P(", %.3f Hz measured", ctx.vblank->Hz());
         o.S("  \n");
     }
-    if (!PadMeasured(ctx))
+    if (penData)
+    {
+        // Each input's own time down, in the order the sections follow.
+        char parts[3][64];
+        int np = 0;
+        if (t.TotalFrames())
+            snprintf(parts[np++], sizeof parts[0], "%.1f s touching the screen", t.TouchingSec(ctx.nowQpc));
+        if (PadMeasured(ctx))
+            snprintf(parts[np++], sizeof parts[0], "%.1f s touching the touch pad", ctx.pad->TouchingSec(ctx.nowQpc));
+        snprintf(parts[np++], sizeof parts[0], "%.1f s with the pen down", ctx.pen->TouchingSec(ctx.nowQpc));
+        o.P("**Session:** %.1f s, of which ", sessionSec);
+        for (int i = 0; i < np; ++i)
+            o.P("%s%s", i == 0 ? "" : (i == np - 1 ? " and " : ", "), parts[i]);
+        o.S("\n\n");
+    }
+    else if (!PadMeasured(ctx))
         o.P("**Session:** %.1f s, of which %.1f s with at least one contact\n\n",
             sessionSec, t.TouchingSec(ctx.nowQpc));
     else if (t.TotalFrames())
@@ -1197,10 +1425,20 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
 
     const bool padData = PadMeasured(ctx);
     const bool screenData = t.TotalFrames() > 0 || t.HidSeen();
-    if (screenData || !padData)
-        MdScreen(o, ctx, dev, padData);
+    if (screenData || (!padData && !penData))
+        MdScreen(o, ctx, dev, padData, penData);
     if (padData)
         MdPad(o, ctx, (screenData || !padData) && t.IntervalMs().n > 0);
+    if (penData)
+    {
+        // The first section with timing explains how the rate is measured.
+        if (screenData && t.IntervalMs().n)
+            MdPen(o, ctx, "#how-the-rate-is-measured", "touch screen");
+        else if (padData && ctx.pad->IntervalMs().n)
+            MdPen(o, ctx, "#how-the-touch-pad-rate-is-measured", "touch pad");
+        else
+            MdPen(o, ctx, nullptr, nullptr);
+    }
 
     // ---- display and rendering
     o.S("## Display and rendering\n\n| Property | Value |\n| --- | --- |\n");
@@ -1244,6 +1482,7 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
     o.S("## Observations\n\n");
     const bool screenTiming = t.IntervalMs().n > 0;
     const bool padTiming = PadMeasured(ctx) && ctx.pad->IntervalMs().n > 0;
+    const bool penTiming = penData && ctx.pen->IntervalMs().n > 0;
     if (!screenTiming)
     {
         if (GridScanRan(ctx))
@@ -1252,12 +1491,12 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
             MdGridObservation(o, *ctx.grid);
             o.S("\n");
         }
-        else if (!PadMeasured(ctx))
+        else if (!PadMeasured(ctx) && !penData)
             o.S("No touch data was captured, so no assessment can be made.\n\n");
     }
     else
     {
-        if (PadMeasured(ctx)) o.S("**Touch screen**\n\n");
+        if (PadMeasured(ctx) || penData) o.S("**Touch screen**\n\n");
         MdRateBullets(o, t);
         if (t.LatencyMs().n)
             o.P("- Median delivery latency %.2f ms, p99 %.2f ms.\n",
@@ -1273,7 +1512,8 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
         o.S("\n");
     }
     if (PadMeasured(ctx)) MdPadObservations(o, ctx);
-    if (screenTiming || padTiming)
+    if (penData) MdPenObservations(o, ctx);
+    if (screenTiming || padTiming || penTiming)
         o.S("Thresholds above are this tool's reporting conventions, not a standard.\n\n");
 
     // ---- hardware inventory
@@ -1282,7 +1522,8 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
         for (size_t i = 0; i < ctx.devices->size(); ++i)
             MdDevice(o, (*ctx.devices)[i],
                      (int)i == ctx.activeDevice ? " — active"
-                     : ((int)i == ctx.padDevice && PadMeasured(ctx) ? " — touch pad measured" : ""));
+                     : (int)i == ctx.padDevice && PadMeasured(ctx) ? " — touch pad measured"
+                     : (int)i == ctx.penDevice && penData ? " — pen measured" : "");
     else
         o.S("No touch digitizer was enumerated.\n\n");
     o.P("System reports touch support: %s. `SM_MAXIMUMTOUCHES` = %d.\n\n",
@@ -1292,14 +1533,14 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
     o.S("## Raw data\n\n");
     o.S("Full measurements are in [`raw/`](raw/), and the machine-readable figures in\n"
         "[`summary.json`](summary.json).\n\n");
-    // With a touch pad in the run, say which input each file belongs to.
+    // With a touch pad or a pen in the run, say which input each file belongs to.
     const bool padToo = PadMeasured(ctx);
     auto row = [&](const char* file, const char* who, const char* what) {
         std::string w = what;
         if (who) { w[0] = (char)tolower((unsigned char)w[0]); w = std::string(who) + ": " + w; }
         o.P("| [`raw/%s`](raw/%s) | %s |\n", file, file, w.c_str());
     };
-    const char* screen = padToo ? "Touch screen" : nullptr;
+    const char* screen = padToo || penData ? "Touch screen" : nullptr;
     o.S("| File | Contents |\n| --- | --- |\n");
     row("samples.csv.gz", screen, "Every buffered sample: timestamps, interval, latency, coordinates, pressure — gzip");
     row("rate_by_contacts.csv", screen, "Report rate per simultaneous contact count");
@@ -1316,6 +1557,13 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
         row("touchpad_contacts.csv", "Touch pad", "Per-contact summary");
         row("touchpad_interval_histogram.csv", "Touch pad", "Report-interval distribution");
     }
+    if (penData)
+    {
+        row("pen_samples.csv.gz", "Pen",
+            "Every buffered sample with the tip down: timestamps, interval, latency, coordinates, pressure, tilt, buttons — gzip");
+        row("pen_interval_histogram.csv", "Pen", "Report-interval distribution");
+        row("pen_latency_histogram.csv", "Pen", "Delivery-latency distribution");
+    }
     row("frametime_histogram.csv", nullptr, "Render frame-time distribution");
     o.S("\n");
     o.P("`samples.csv.gz` is gzip-compressed CSV; `pandas.read_csv` and R's `read.csv`\n"
@@ -1329,6 +1577,13 @@ static bool WriteMarkdown(const std::wstring& path, const ExportContext& ctx)
             "the host clock at the start of each touch, and `host_ms` is when the report arrived.\n"
             "A contact the pad simply stops reporting, rather than reporting as lifted, counts in\n"
             "the ups above but has no `up` row of its own.\n\n");
+    if (penData)
+        o.S("`pen_samples.csv.gz` has one row per pen report with the tip down, the lift\n"
+            "included; hover reports are not kept. `pressure` runs from 0 to 1 and\n"
+            "`pressure_level` gives the same value as the 0–1024 integer Windows passes on,\n"
+            "which is the one to count distinct levels by. `tilt_x` and `tilt_y` are in degrees\n"
+            "and `rotation` in degrees clockwise, each empty when the pen does not report it;\n"
+            "`barrel`, `inverted` and `eraser` are the pen's button flags.\n\n");
     o.P("---\n\nGenerated by TouchRate. QPC frequency %lld Hz.\n", (long long)QpcFreq());
     return true;
 }
@@ -1392,6 +1647,9 @@ static bool WriteJson(const std::wstring& path, const ExportContext& ctx)
             o.P("\"hid_usage_page\": %u, \"hid_usage\": %u, ", d.usagePage, d.usage);
             o.P("\"max_contacts_os\": %u, \"max_contacts_hid\": %u, ", d.maxContacts, d.hidMaxContacts);
             o.P("\"input_report_bytes\": %u, ", d.inputReportBytes);
+            if (d.IsPen())
+                o.P("\"pen\": true, \"pressure_levels\": %u, \"tilt\": %s, \"twist\": %s, ",
+                    d.pressureLevels, d.hasTilt ? "true" : "false", d.hasTwist ? "true" : "false");
             if (d.haveRects)
             {
                 o.P("\"device_extent\": [%ld, %ld], ",
@@ -1498,6 +1756,7 @@ static bool WriteJson(const std::wstring& path, const ExportContext& ctx)
         (unsigned long long)t.HidUndelivered());
     o.P("    \"other_window_not_judged\": %llu, \"other_window_while_fullscreen\": %llu,\n",
         (unsigned long long)t.HidOffWindow(), (unsigned long long)t.HidOffWindowBlocked());
+    o.P("    \"pen_in_range_not_judged\": %llu,\n", (unsigned long long)t.HidPenHeld());
     o.P("    \"edge_band_px\": %.0f,\n", kEdgeBandPx);
     {
         const WindowInfo& w = ctx.window;
@@ -1573,6 +1832,54 @@ static bool WriteJson(const std::wstring& path, const ExportContext& ctx)
         stat("tap_interval_ms", p.TapIntervalMs());
         stat("dwell_ms", p.DwellMs());
         byCount(p);
+        o.S("  },\n");
+    }
+
+    if (PenMeasured(ctx))
+    {
+        const Tracker& p = *ctx.pen;
+        const Histogram& ph = p.IntervalHist();
+        const Histogram& pl = p.LatencyHist();
+        const uint8_t flags = p.PenFlagsSeen();
+        o.S("  \"pen\": {\n");
+        if (const TouchDevice* dev = PenDevice(ctx))
+            o.P("    \"device_index\": %d, \"name\": \"%s\", \"vid_hex\": \"%04X\", \"pid_hex\": \"%04X\",\n"
+                "    \"pressure_levels_declared\": %u, \"tilt_declared\": %s, \"twist_declared\": %s,\n",
+                (int)(dev - ctx.devices->data()), Esc(dev->Label()).c_str(), dev->vid, dev->pid,
+                dev->pressureLevels, dev->hasTilt ? "true" : "false", dev->hasTwist ? "true" : "false");
+        o.P("    \"history_recovery\": %s,\n", p.UseHistory() ? "true" : "false");
+        o.P("    \"frames\": %llu, \"samples\": %llu, \"history_samples\": %llu, \"hover_reports\": %llu,\n",
+            (unsigned long long)p.TotalFrames(), (unsigned long long)p.TotalSamples(),
+            (unsigned long long)p.HistorySamples(), (unsigned long long)p.HoverReports());
+        o.P("    \"pointer_messages\": %llu, \"raw_hid_reports\": %llu,\n",
+            (unsigned long long)p.Messages(), (unsigned long long)p.HidReports());
+        o.P("    \"rate_hz\": %.4f, \"modal_hz\": %.4f, \"mean_hz\": %.4f, \"max_gap_ms\": %.4f,\n",
+            p.RateHz(), p.ModeHz(), p.AvgHz(), p.MaxGapMs());
+        if (ph.total)
+            o.P("    \"interval_p50_ms\": %.6f, \"interval_p90_ms\": %.6f,"
+                " \"interval_p99_ms\": %.6f, \"interval_p999_ms\": %.6f,\n",
+                ph.Percentile(0.50), ph.Percentile(0.90), ph.Percentile(0.99), ph.Percentile(0.999));
+        stat("interval_ms", p.IntervalMs());
+        if (pl.total)
+            o.P("    \"latency_p50_ms\": %.6f, \"latency_p90_ms\": %.6f,"
+                " \"latency_p99_ms\": %.6f, \"latency_p999_ms\": %.6f,\n",
+                pl.Percentile(0.50), pl.Percentile(0.90), pl.Percentile(0.99), pl.Percentile(0.999));
+        stat("device_to_app_ms", p.LatencyMs());
+        o.P("    \"hover_rate_hz\": %.4f,\n", p.HoverRateHz());
+        stat("hover_interval_ms", p.HoverIntervalMs());
+        stat("pressure", p.Pressure());
+        stat("pressure_at_down", p.PressureAtDown());
+        o.P("    \"pressure_values_seen\": %u,\n", p.PressureLevels());
+        stat("tilt_x_deg", p.TiltX());
+        stat("tilt_y_deg", p.TiltY());
+        o.P("    \"rotation_reported\": %s, \"barrel_used\": %s, \"eraser_used\": %s,\n",
+            p.RotationSeen() ? "true" : "false", (flags & PEN_FLAG_BARREL) ? "true" : "false",
+            (flags & (PEN_FLAG_ERASER | PEN_FLAG_INVERTED)) ? "true" : "false");
+        o.P("    \"downs\": %llu, \"ups\": %llu, \"watchdog_released\": %llu,\n",
+            (unsigned long long)p.Downs(), (unsigned long long)p.Ups(), (unsigned long long)p.LostContacts());
+        stat("processed_minus_raw_px", p.PredictPx());
+        stat("tap_interval_ms", p.TapIntervalMs());
+        stat("dwell_ms", p.DwellMs(), false);
         o.S("  },\n");
     }
 
@@ -1709,6 +2016,21 @@ ExportResult ExportAll(const ExportContext& ctx, const std::wstring& baseDir)
         if (WriteContacts(p, *ctx.pad)) res.files.push_back(p);
         p = raw + L"\\touchpad_interval_histogram.csv";
         { Out o; if (o.Open(p)) { HistogramCsv(o, ctx.pad->IntervalHist(), "interval_ms", true); res.files.push_back(p); } }
+    }
+
+    if (PenMeasured(ctx))
+    {
+        p = raw + L"\\pen_samples.csv.gz";
+        if (!WritePenSamples(p, *ctx.pen, res.penSampleRows))
+        {
+            res.error = "failed writing pen_samples.csv.gz";
+            return res;
+        }
+        res.files.push_back(p);
+        p = raw + L"\\pen_interval_histogram.csv";
+        { Out o; if (o.Open(p)) { HistogramCsv(o, ctx.pen->IntervalHist(), "interval_ms", true); res.files.push_back(p); } }
+        p = raw + L"\\pen_latency_histogram.csv";
+        { Out o; if (o.Open(p)) { HistogramCsv(o, ctx.pen->LatencyHist(), "latency_ms", false); res.files.push_back(p); } }
     }
 
     p = raw + L"\\interval_histogram.csv";

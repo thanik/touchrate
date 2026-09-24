@@ -85,6 +85,8 @@ static void PrintDeviceList()
         if (d.maxContacts)    Out("    max contacts : %u (OS)\n", d.maxContacts);
         if (d.hidMaxContacts) Out("    contact slots: %u per HID report\n", d.hidMaxContacts);
         if (d.inputReportBytes) Out("    input report : %u bytes\n", d.inputReportBytes);
+        if (d.pressureLevels) Out("    pressure     : %u levels (HID), 0-1024 as Windows passes it on\n", d.pressureLevels);
+        if (d.IsPen()) Out("    tilt / twist : %s / %s\n", d.hasTilt ? "yes" : "no", d.hasTwist ? "yes" : "no");
         if (d.haveRects)
             Out("    geometry     : %ld x %ld units -> %ld x %ld px  (%.2f steps/px)\n",
                 d.deviceRect.right - d.deviceRect.left, d.deviceRect.bottom - d.deviceRect.top,
@@ -231,6 +233,7 @@ static void RefreshDevices(App& app, bool notify)
     app.devices = EnumerateTouchDevices();
     app.activeDevice = FindDeviceByHandle(app.devices, app.tracker.LastSourceDevice());
     app.padDevice = FindDeviceByHandle(app.devices, app.padIn.Device());
+    app.penDevice = FindDeviceByHandle(app.devices, app.pen.LastSourceDevice());
     if (notify)
     {
         char b[128];
@@ -244,7 +247,8 @@ static void RefreshDevices(App& app, bool notify)
 
 // Decode what the raw input thread received and route each report by source:
 // a touch screen's go to its delivery check, a touch pad's to its own
-// measurement. Pad reports never reach the touch screen's figures.
+// measurement. Pad reports never reach the touch screen's figures. A pen's
+// are only counted, and tell the delivery check the pen is in range.
 static void ProcessRawInput(App& app)
 {
     app.rawPump.Drain(g_reports, g_reportBytes);
@@ -253,7 +257,14 @@ static void ProcessRawInput(App& app)
         g_hidContacts.clear();
         HidReportInfo info;
         if (!app.hid.Decode(r.device, g_reportBytes.data() + r.offset, r.len, g_hidContacts, info))
+        {
+            if (app.hid.IsPen(r.device))
+            {
+                app.pen.CountHidReport(r.qpc);
+                app.tracker.NotePen(r.qpc);
+            }
             continue;
+        }
         if (info.pad)
         {
             HidDescriptorInfo desc;
@@ -273,30 +284,39 @@ static void SetSource(App& app, Source s)
     app.source = s;
     if (!app.gridMode)
         app.Notify(s == Source::Pad ? "Showing the touch pad - touch the screen to switch back"
+                 : s == Source::Pen ? "Showing the pen - touch the screen to switch back"
                                     : "Showing the touch screen", Pal::textDim);
 }
 
-// The analyzer shows whichever input a finger last went down on.
+// The analyzer shows whichever input last went down: a finger on the screen
+// or the pad, or the pen's tip.
 static void FollowSource(App& app)
 {
-    const uint64_t sd = app.tracker.Downs(), pd = app.pad.Downs();
+    const uint64_t sd = app.tracker.Downs(), pd = app.pad.Downs(), nd = app.pen.Downs();
     const bool screenNew = sd > app.screenDownsSeen, padNew = pd > app.padDownsSeen;
+    const bool penNew = nd > app.penDownsSeen;
     app.screenDownsSeen = sd;
     app.padDownsSeen = pd;
+    app.penDownsSeen = nd;
     if (screenNew) SetSource(app, Source::Screen);
+    else if (penNew) SetSource(app, Source::Pen);
     else if (padNew) SetSource(app, Source::Pad);
 }
 
-// With a touch pad and no touch screen - a laptop without one - start on the pad.
+// Start on the touch screen if there is one; otherwise on a pen - a drawing
+// tablet or pen display - and failing that on a laptop's touch pad.
 static Source DefaultSource(const App& app)
 {
-    bool screen = false, pad = false;
+    bool screen = false, pad = false, pen = false;
     for (const TouchDevice& d : app.devices)
     {
-        if (d.usage == 0x05) pad = true;
+        if (d.IsPad()) pad = true;
+        else if (d.IsPen()) pen = true;
         else if ((d.usage == 0x04 || d.maxContacts > 1) && (d.vid || d.pid)) screen = true;
     }
-    return pad && !screen ? Source::Pad : Source::Screen;
+    if (screen) return Source::Screen;
+    if (pen) return Source::Pen;
+    return pad ? Source::Pad : Source::Screen;
 }
 
 // -------------------------------------------------------------------- actions
@@ -325,6 +345,8 @@ static void DoExport(App& app)
     ctx.pad = &app.pad;
     ctx.padIn = &app.padIn;
     ctx.padDevice = app.padDevice;
+    ctx.pen = &app.pen;
+    ctx.penDevice = app.penDevice;
     ctx.present = app.Present();
     ctx.sessionStartQpc = app.startQpc;
     ctx.nowQpc = QpcNow();
@@ -335,9 +357,14 @@ static void DoExport(App& app)
         app.lastExportDir = res.dir;
         char b[512];
         double ratio = res.sampleBytesGz ? (double)res.sampleBytesRaw / (double)res.sampleBytesGz : 0.0;
-        char padNote[64] = "";
+        char padNote[128] = "";
+        int pn = 0;
         if (res.padSampleRows)
-            snprintf(padNote, sizeof padNote, " + %llu touch pad samples", (unsigned long long)res.padSampleRows);
+            pn += snprintf(padNote + pn, sizeof padNote - pn, " + %llu touch pad samples",
+                           (unsigned long long)res.padSampleRows);
+        if (res.penSampleRows)
+            snprintf(padNote + pn, sizeof padNote - pn, " + %llu pen samples",
+                     (unsigned long long)res.penSampleRows);
         snprintf(b, sizeof b, "Exported to %s\\  (%llu samples%s, %.1f MB -> %.1f MB gzip, %.1fx)",
                  WideToUtf8(res.stem).c_str(), (unsigned long long)res.sampleRows, padNote,
                  res.sampleBytesRaw / 1048576.0, res.sampleBytesGz / 1048576.0, ratio);
@@ -356,17 +383,24 @@ static void ToggleLiveLog(App& app)
         uint64_t rows = app.tracker.LiveLogRows();
         std::string p = WideToUtf8(app.tracker.LiveLogPath());
         app.tracker.StopLiveLog();
-        char b[512];
+        // The touch pad and the pen stream to files of their own beside it.
+        char beside[128] = "";
+        int n = 0;
         if (app.pad.LiveLogging())
         {
-            const uint64_t padRows = app.pad.LiveLogRows();
+            n += snprintf(beside + n, sizeof beside - n, ", %llu touch pad rows",
+                          (unsigned long long)app.pad.LiveLogRows());
             app.pad.StopLiveLog();
-            snprintf(b, sizeof b, "Live log stopped: %llu rows in %s, %llu touch pad rows beside it",
-                     (unsigned long long)rows, p.c_str(), (unsigned long long)padRows);
         }
-        else
-            snprintf(b, sizeof b, "Live log stopped: %llu rows in %s",
-                     (unsigned long long)rows, p.c_str());
+        if (app.pen.LiveLogging())
+        {
+            n += snprintf(beside + n, sizeof beside - n, "%s%llu pen rows", n ? " and " : ", ",
+                          (unsigned long long)app.pen.LiveLogRows());
+            app.pen.StopLiveLog();
+        }
+        char b[512];
+        snprintf(b, sizeof b, "Live log stopped: %llu rows in %s%s%s", (unsigned long long)rows,
+                 p.c_str(), beside, n ? " beside it" : "");
         app.Notify(b, Pal::good);
         return;
     }
@@ -380,11 +414,16 @@ static void ToggleLiveLog(App& app)
     {
         app.lastExportDir = dir;
         // A touch pad gets a file of its own: its samples are in pad units.
+        // So does a pen, whose samples carry pressure, tilt and buttons.
         bool pad = app.padIn.Seen();
-        for (const TouchDevice& d : app.devices) if (d.usage == 0x05) pad = true;
+        for (const TouchDevice& d : app.devices) if (d.IsPad()) pad = true;
         if (pad) app.pad.StartLiveLog(dir + L"\\touchrate_" + stamp + L"_touchpad_live.csv");
+        if (app.HasPen()) app.pen.StartLiveLog(dir + L"\\touchrate_" + stamp + L"_pen_live.csv");
+        std::string also;
+        if (app.pad.LiveLogging()) also += " + _touchpad_live.csv";
+        if (app.pen.LiveLogging()) also += " + _pen_live.csv";
         app.Notify("Live log started: " + WideToUtf8(path) +
-                   (app.pad.LiveLogging() ? "  (+ _touchpad_live.csv)" : ""), Pal::good);
+                   (also.empty() ? "" : "  (" + also.substr(1) + ")"), Pal::good);
     }
     else app.Notify("Could not open the live log file", Pal::bad);
 }
@@ -553,14 +592,17 @@ static void OnKey(App& app, WPARAM key)
         app.tracker.ResetStats();
         app.pad.ResetStats();
         app.padIn.ResetStats();
+        app.pen.ResetStats();
         app.frame.Reset();
         app.Notify("Measurements reset", Pal::good);
         break;
     case 'C':
         app.tracker.ClearInk();
         app.pad.ClearInk();
+        app.pen.ClearInk();
         app.rend.ClearInk();
         app.inkDrawn = app.tracker.InkTotal();
+        app.penInkDrawn = app.pen.InkTotal();
         app.Notify("Ink cleared", Pal::textDim);
         break;
     case 'V':
@@ -571,6 +613,7 @@ static void OnKey(App& app, WPARAM key)
         break;
     case 'H':
         app.tracker.SetUseHistory(!app.tracker.UseHistory());
+        app.pen.SetUseHistory(app.tracker.UseHistory());
         app.Notify(app.tracker.UseHistory()
                    ? "Coalesced-frame recovery ON - showing hardware report rate"
                    : "Coalesced-frame recovery OFF - showing delivered message rate",
@@ -598,12 +641,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_POINTERUPDATE:
     case WM_POINTERUP:
         // Handling these (rather than deferring to DefWindowProc) is what keeps
-        // Windows from promoting touch to legacy mouse messages and gestures.
-        if (app) app->tracker.HandlePointerMessage(msg, wp, QpcNow());
+        // Windows from promoting touch and pen to legacy mouse messages and
+        // gestures. A pen goes to a tracker of its own; mouse input promoted
+        // into the pointer stack is ignored.
+        if (app)
+        {
+            const int64_t now = QpcNow();
+            POINTER_INPUT_TYPE type = PT_POINTER;
+            const bool typed = GetPointerType(GET_POINTERID_WPARAM(wp), &type) != FALSE;
+            if (typed && type == PT_PEN)
+            {
+                app->pen.HandlePointerMessage(msg, wp, now);
+                app->tracker.NotePen(now);
+            }
+            else if (!typed || type == PT_TOUCH)
+                app->tracker.HandlePointerMessage(msg, wp, now);
+        }
+        return 0;
+
+    case WM_POINTERLEAVE:
+        // A pen that leaves detection range stops hovering.
+        if (app) app->pen.PointerLeft(GET_POINTERID_WPARAM(wp));
         return 0;
 
     case WM_POINTERENTER:
-    case WM_POINTERLEAVE:
     case WM_POINTERCAPTURECHANGED:
     case WM_TOUCHHITTESTING:
         return 0;
@@ -766,8 +827,11 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     app.tracker.Init(opt.capacity);
     app.tracker.SetUseHistory(opt.history);
     // A pad reports at most five or so contacts, so half the rows go as far.
-    app.pad.Init(opt.capacity / 2, true);
+    app.pad.Init(opt.capacity / 2, Source::Pad);
     app.padIn.Init(&app.pad);
+    // A pen is one contact, however fast it reports.
+    app.pen.Init(opt.capacity / 2, Source::Pen);
+    app.pen.SetUseHistory(opt.history);
     app.frame.Init();
     app.startQpc = QpcNow();
     app.nowQpc = app.startQpc;
@@ -803,6 +867,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     if (!app.hwnd) return 1;
 
     app.tracker.SetWindow(app.hwnd);
+    app.pen.SetWindow(app.hwnd);
     DisableTouchFeedback(app.hwnd);
     // Digitizer reports arrive on a thread of their own, which stamps each
     // one as it lands; failing that, on this window.
@@ -836,6 +901,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
         app.Notify("No touch digitizer detected - press [D] to re-enumerate", Pal::warn);
     else if (app.ShowingPad())
         app.Notify("Ready. Put fingers on the touch pad to measure it; press [F1] for help.", Pal::good);
+    else if (app.ShowingPen())
+        app.Notify("Ready. Draw with the pen to measure it; press [F1] for help.", Pal::good);
     else
         app.Notify("Ready. Touch the screen to measure; press [F1] for help.", Pal::good);
 
@@ -878,6 +945,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
             if (app.padIn.Device() &&
                 (app.padDevice < 0 || app.devices[(size_t)app.padDevice].rawHandle != app.padIn.Device()))
                 app.padDevice = FindDeviceByHandle(app.devices, app.padIn.Device());
+            if (app.pen.LastSourceDevice() &&
+                (app.penDevice < 0 || app.devices[(size_t)app.penDevice].pointerHandle != app.pen.LastSourceDevice()))
+                app.penDevice = FindDeviceByHandle(app.devices, app.pen.LastSourceDevice());
         }
 
         POINT origin{ 0, 0 };
@@ -885,6 +955,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
         app.tracker.SetClientOrigin(origin);
         app.tracker.SetEdgeSwipeBlocked(app.EdgeSwipeBlocked());
         app.tracker.Update(app.nowQpc);
+        app.pen.SetClientOrigin(origin);
+        app.pen.Update(app.nowQpc);
         app.padIn.Update(app.nowQpc);
         app.pad.Update(app.nowQpc);
         FollowSource(app);
@@ -905,6 +977,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     app.rawPump.Stop();
     app.tracker.StopLiveLog();
     app.pad.StopLiveLog();
+    app.pen.StopLiveLog();
     app.vblank.Stop();
     app.rend.Shutdown();
     timeEndPeriod(1);

@@ -15,6 +15,13 @@ struct TouchDevice
     uint32_t maxContacts = 0;       // from POINTER_DEVICE_INFO.maxActiveContacts
     uint32_t hidMaxContacts = 0;    // derived from HID link collections
     uint32_t inputReportBytes = 0;  // HID input report length
+    POINTER_DEVICE_TYPE pointerDeviceType = (POINTER_DEVICE_TYPE)0;   // 0 when not a pointer device
+
+    // A pen's own resolution, from its HID descriptor. Windows scales whatever
+    // it declares to 0..1024 before an application sees it.
+    uint32_t pressureLevels = 0;    // 0 when the descriptor declares no tip pressure
+    bool     hasTilt = false;
+    bool     hasTwist = false;
 
     RECT deviceRect{};   // digitizer logical extents
     RECT displayRect{};  // mapped display area, pixels
@@ -32,6 +39,15 @@ struct TouchDevice
     // report, and a panel in hybrid mode splits more contacts than that across
     // several reports, so the device's own declared maximum can be larger.
     uint32_t ContactCapacity() const { return std::max(maxContacts, hidMaxContacts); }
+    bool IsPen() const
+    {
+        return (usagePage == 0x0D && usage == 0x02) ||
+               pointerDeviceType == POINTER_DEVICE_TYPE_INTEGRATED_PEN ||
+               pointerDeviceType == POINTER_DEVICE_TYPE_EXTERNAL_PEN;
+    }
+    bool IsPad() const { return usage == 0x05; }
+    // A touch screen: anything that is neither a pen nor a touch pad.
+    bool IsScreen() const { return !IsPen() && !IsPad(); }
     double StepsPerPixelX() const;
     double StepsPerPixelY() const;
     std::string VidPidString() const;   // "VID_04F3 PID_2A00"

@@ -5,9 +5,14 @@
 
 enum SampleKind : uint8_t { SK_DOWN = 0, SK_UPDATE = 1, SK_UP = 2 };
 
+// The input a tracker measures, and the one the analyzer is showing. A laptop
+// can have all three, and each is measured on its own.
+enum class Source : uint8_t { Screen, Pad, Pen };
+
 constexpr int  kMaxSlots  = 20;
 constexpr int  kTrailCap  = 2048;   // live stroke points kept per contact
 constexpr size_t kInkCap  = 65536;  // ink points buffered between frames
+constexpr int8_t kNoTilt  = -128;   // a pen tilt the device does not report
 
 struct TrailPt
 {
@@ -22,6 +27,19 @@ struct InkPt
     float   x = 0, y = 0;
     uint8_t slot = 0;
     uint8_t fromHistory = 0;
+    uint8_t pressure = 0;   // a pen's pressure in 1/255 steps, which sizes its ink
+};
+
+// What a sample carries besides its position, as the device reported it: -1,
+// or kNoTilt, where it does not report that value.
+struct SampleExtras
+{
+    float   pressure = -1;             // 0..1
+    float   cw = -1, ch = -1;          // contact size, pixels
+    float   orient = -1;               // a finger's orientation, degrees
+    float   rotation = -1;             // a pen's twist, degrees
+    int8_t  tiltX = kNoTilt, tiltY = kNoTilt;   // a pen's tilt, degrees
+    uint8_t penFlags = 0;              // PEN_FLAG_BARREL / _INVERTED / _ERASER
 };
 
 // One finger in a complete touch pad frame, in pad units. A contact with tip
@@ -43,7 +61,10 @@ struct ExportRec
     int32_t  rawX = 0, rawY = 0;           // screen pixels (unprocessed)
     int32_t  hmX = 0, hmY = 0;             // himetric, unprocessed
     float    pressure = -1, cw = -1, ch = -1, orient = -1;
+    float    rotation = -1;
     float    dtMs = 0, latencyMs = 0;
+    int8_t   tiltX = kNoTilt, tiltY = kNoTilt;
+    uint8_t  penFlags = 0;
     uint8_t  slot = 0, kind = SK_UPDATE, fromHistory = 0, pointerType = 0;
 };
 
@@ -89,6 +110,9 @@ struct Contact
     float    downX = 0, downY = 0;
     int32_t  pxX = 0, pxY = 0, rawX = 0, rawY = 0, hmX = 0, hmY = 0;
     float    pressure = -1, cw = -1, ch = -1, orient = -1;
+    float    rotation = -1;
+    int8_t   tiltX = kNoTilt, tiltY = kNoTilt;
+    uint8_t  penFlags = 0;
     uint8_t  pointerType = 0;
 
     uint64_t samples = 0;
@@ -115,14 +139,27 @@ struct Contact
     void ClearTrail() { trailCount = 0; trailHead = 0; }
 };
 
+// A pen in range with its tip up. It reports where it is, but it is not a
+// contact and is not measured as one.
+struct PenHover
+{
+    uint32_t pointerId = 0;
+    float    x = 0, y = 0;             // client pixels
+    int8_t   tiltX = kNoTilt, tiltY = kNoTilt;
+    uint8_t  penFlags = 0;
+    int64_t  hostQpc = 0;              // its latest report; 0 once it has left
+};
+
 // Measures one input source. The touch screen feeds it pointer messages; a
 // touch pad, which Windows never delivers as touch, feeds a second instance
-// whole frames decoded from its HID reports.
+// whole frames decoded from its HID reports; a pen feeds a third its own
+// pointer messages.
 class Tracker
 {
 public:
-    void Init(size_t exportCapacity, bool pad = false);
-    bool IsPad() const { return m_pad; }
+    void Init(size_t exportCapacity, Source source = Source::Screen);
+    bool IsPad() const { return m_source == Source::Pad; }
+    bool IsPen() const { return m_source == Source::Pen; }
     void ResetStats();          // clears measurements, keeps live contacts
     void ClearInk();
 
@@ -134,6 +171,14 @@ public:
 
     // Called from the window procedure. Returns accepted sample count.
     int  HandlePointerMessage(UINT msg, WPARAM wParam, int64_t hostQpc);
+    // One pen message's samples, newest first as GetPointerPenInfoHistory
+    // returns them. Samples with the tip up only move the hover position.
+    int  HandlePenHistory(const POINTER_PEN_INFO* newestFirst, uint32_t n, int64_t hostQpc, bool isUp);
+    // The pointer left detection range: a pen stops hovering.
+    void PointerLeft(uint32_t pointerId);
+    // One of the pen's own HID reports, which is not decoded: hovering or
+    // touching, it says the pen is in range and how fast it reports.
+    void CountHidReport(int64_t now);
     // One decoded HID touch report from the digitizer, via Raw Input.
     void HandleHidReport(const std::vector<HidContactSample>& contacts,
                          const HidReportInfo& info, int64_t now);
@@ -146,6 +191,10 @@ public:
 
     // Whether Windows edge-swipe gestures are currently blocked for the window.
     void SetEdgeSwipeBlocked(bool v) { m_edgeSwipeBlocked = v; }
+    // The pen reported at this time. While a pen is in range Windows holds
+    // touch back so that a resting palm does not draw, so a panel contact it
+    // did not deliver then is not counted as lost.
+    void NotePen(int64_t qpc) { if (qpc > m_penSeenQpc) m_penSeenQpc = qpc; }
 
     // ---- live state
     const Contact& Slot(int i) const { return m_slots[i]; }
@@ -178,6 +227,12 @@ public:
     // are counted here instead of in HidContacts().
     uint64_t HidOffWindow()     const { return m_hidOffWindow; }
     uint64_t HidOffWindowBlocked() const { return m_hidOffWindowBlocked; }   // with edge swipes blocked
+    // Panel contacts Windows did not deliver while a pen was in range, which
+    // it does on purpose; counted here instead of as lost.
+    uint64_t HidPenHeld()       const { return m_hidPenHeld; }
+    // Whether a panel contact falls where a pen in range explains its not
+    // being delivered.
+    bool PenExcuses(const HidTrack& t) const;
     uint64_t UndeliveredDropped() const { return m_undeliveredDropped; }
     const Stats& HidMatchOffsetPx()    const { return m_hidMatchOffset; }
     const Stats& DeliveredEdgeDist()   const { return m_deliveredEdge; }
@@ -244,6 +299,30 @@ public:
         return QpcToSec(m_touchingQpc + open);
     }
 
+    // ---- pen: only a pen tracker fills these
+    // Pressure is as Windows passes it on, 0..1024 scaled to 0..1, whatever
+    // the pen's own resolution. Every figure counts samples with the tip down;
+    // the lift, which reads 0, is left out.
+    const Stats& Pressure()       const { return m_pressure; }
+    const Stats& PressureAtDown() const { return m_pressureAtDown; }   // each stroke's first sample
+    uint32_t PressureLevels()     const { return m_pressureLevels; }   // distinct values of 0..1024 seen
+    // Pressure of every tip-down sample, newest last; -1 marks a lift.
+    const Ring& PressureRing()    const { return m_pressureRing; }
+    const Stats& TiltX() const { return m_tiltX; }   // n is 0 when the pen reports no tilt
+    const Stats& TiltY() const { return m_tiltY; }
+    bool     RotationSeen() const { return m_rotationSeen; }
+    uint8_t  PenFlagsSeen() const { return m_penFlagsSeen; }   // every PEN_FLAG_ seen, ORed
+    const PenHover& Hover() const { return m_hover; }
+    bool     Hovering(int64_t now) const;
+    // Latest report from a pen in range, tip up or down; 0 before any.
+    int64_t  LastInRange() const { return std::max(m_hover.hostQpc, m_lastPenQpc); }
+    // The rate while hovering, measured the same way as the rate with the tip
+    // down, over the gaps between consecutive hover reports.
+    double   HoverRateHz() const;
+    double   HoverLiveHz(int64_t now) const { return m_hoverRate.Hz(now); }
+    const Stats& HoverIntervalMs() const { return m_hoverIntervalMs; }
+    uint64_t HoverReports() const { return m_hoverReports; }
+
     uint64_t TotalSamples() const { return m_totalSamples; }
     uint64_t TotalFrames()  const { return m_totalFrames; }
     uint64_t HistorySamples() const { return m_historySamples; }
@@ -289,10 +368,15 @@ public:
 
 private:
     int  IngestFrames(uint32_t pointerId, int64_t hostQpc, bool isUp);
+    int  IngestPenFrames(uint32_t pointerId, int64_t hostQpc, bool isUp);
     void AcceptSample(const POINTER_TOUCH_INFO& ti, int64_t hostQpc, bool fromHistory, bool isUp);
+    void AcceptSample(const POINTER_INFO& pi, const SampleExtras& ex, int64_t hostQpc,
+                      bool fromHistory, bool isUp);
+    void AcceptHover(const POINTER_PEN_INFO& pen, int64_t devQpc, int64_t hostQpc);
+    void RecordPen(const SampleExtras& ex, uint8_t kind, bool started);
     void AcceptPadContact(const PadContact& pc, int64_t devQpc, int64_t hostQpc, uint32_t frameId);
     double AdvanceContact(Contact& c, uint8_t kind, int64_t devQpc, float x, float y, bool& started);
-    void PushInk(float x, float y, int slot, bool fromHistory);
+    void PushInk(float x, float y, int slot, bool fromHistory, float pressure = 0);
     void RecountLive(int64_t hostQpc);
     void AddFrameInterval(int64_t devQpc);
     void EndFrame(int64_t devQpc);
@@ -307,8 +391,9 @@ private:
     void PushRecord(const ExportRec& r);
     void WriteLogRow(const ExportRec& r);
     void WritePadLogRow(const ExportRec& r);
+    void WritePenLogRow(const ExportRec& r);
 
-    bool  m_pad = false;
+    Source m_source = Source::Screen;
     double m_clockResMs = 0;
     HWND  m_hwnd = nullptr;
     POINT m_clientOrigin{ 0, 0 };
@@ -362,9 +447,27 @@ private:
     uint64_t m_hidSplitReports = 0;
     uint32_t m_hidMaxContactCount = 0;
     uint64_t m_hidOffWindow = 0, m_hidOffWindowBlocked = 0;
+    uint64_t m_hidPenHeld = 0;
+    int64_t  m_penSeenQpc = 0;
     Stats    m_hidMatchOffset, m_deliveredEdge, m_undeliveredEdge;
     RECT     m_hidDisplay{};
     bool     m_hidHaveDisplay = false;
+
+    // Pen.
+    Stats    m_pressure, m_pressureAtDown, m_tiltX, m_tiltY;
+    std::vector<uint8_t> m_levelSeen;    // one flag per pressure value, 0..1024
+    uint32_t m_pressureLevels = 0;
+    Ring     m_pressureRing;
+    bool     m_rotationSeen = false;
+    uint8_t  m_penFlagsSeen = 0;
+    PenHover m_hover;
+    int64_t  m_lastPenQpc = 0;           // latest tip-down report
+    int64_t  m_lastHoverDevQpc = 0;      // for the next hover interval; 0 across a stroke
+    Stats    m_hoverIntervalMs;
+    Histogram m_hoverHist;
+    RateMeter m_hoverRate;
+    uint64_t m_hoverReports = 0;
+    std::vector<POINTER_PEN_INFO> m_penScratch;
 
     bool     m_hmSeen = false;
     int32_t  m_hmMinX = 0, m_hmMinY = 0, m_hmMaxX = 0, m_hmMaxY = 0;
@@ -388,3 +491,8 @@ const char* SampleKindName(uint8_t k);
 
 // Column header of a touch pad sample CSV, shared by the export and the live log.
 extern const char* const kPadCsvHeader;
+
+// A pen's sample CSV, shared the same way: the header, and one row formatted
+// into buf with times relative to t0. Returns the row's length.
+extern const char* const kPenCsvHeader;
+int FormatPenCsvRow(char* buf, size_t n, uint64_t seq, const ExportRec& r, int64_t t0);

@@ -180,8 +180,21 @@ static void QueryHidDetails(TouchDevice& d)
                     {
                         const HIDP_VALUE_CAPS& c = vc[i];
                         USHORT u = c.IsRange ? c.Range.UsageMin : c.NotRange.Usage;
+                        const USHORT uMax = c.IsRange ? c.Range.UsageMax : u;
+                        auto has = [&](USHORT usage) { return usage >= u && usage <= uMax; };
                         if (c.UsagePage == 0x01 && u == 0x30) // Generic Desktop / X
                             cols.push_back(c.LinkCollection);
+                        if (c.UsagePage != 0x0D) continue;
+                        if (has(0x30) && !d.pressureLevels)   // Tip Pressure
+                        {
+                            // A 16-bit field with a maximum of 65535 can come back
+                            // sign-extended; its bit size says what it holds.
+                            long long lo = c.LogicalMin, hi = c.LogicalMax;
+                            if (hi <= lo && c.BitSize > 0 && c.BitSize < 32) { lo = 0; hi = (1LL << c.BitSize) - 1; }
+                            if (hi > lo) d.pressureLevels = (uint32_t)std::min<long long>(hi - lo + 1, 1LL << 24);
+                        }
+                        if (has(0x3D) || has(0x3E)) d.hasTilt = true;    // X / Y Tilt
+                        if (has(0x41)) d.hasTwist = true;                // Twist
                     }
                     std::sort(cols.begin(), cols.end());
                     cols.erase(std::unique(cols.begin(), cols.end()), cols.end());
@@ -311,6 +324,7 @@ static void EnumPointerDevices(std::vector<TouchDevice>& out,
 
         d->isPointerDevice = true;
         d->pointerHandle = pd.device;
+        d->pointerDeviceType = pd.pointerDeviceType;
         d->monitor = pd.monitor;
         d->displayOrientation = pd.displayOrientation;
         d->maxContacts = pd.maxActiveContacts;
